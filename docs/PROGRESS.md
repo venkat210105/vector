@@ -14,12 +14,14 @@ HNSW's recall gets measured against later, and the durability model every
 future index has to fit into.
 
 ### `Point` (`vectordb/core/point.py`)
+
 The stored unit: `id` + `vector` + `metadata`. `__post_init__` coerces the
 vector to `np.float32` — half the memory of float64, and precision loss is
 irrelevant at vector-search scale. Every vector in the system funnels through
 this coercion so distance math always runs on a consistent dtype.
 
 ### Distance functions (`vectordb/core/distance.py`)
+
 Two metrics — `l2` and `cosine` — each with a scalar form and a **batch**
 form (`l2_batch`, `cosine_batch`). The batch form computes the distance from
 one query to every stored vector in a single vectorized numpy call
@@ -29,6 +31,7 @@ only direction matters, which matters for embeddings where magnitude often
 just reflects text length, not semantic content.
 
 ### `FlatIndex` (`vectordb/core/flat_index.py`)
+
 Brute-force ground truth: one `(n, dim)` numpy matrix (`_vectors`), plus
 `_ids`/`_id_to_row` maps and a `_deleted_rows` tombstone set.
 
@@ -47,6 +50,7 @@ Concurrency: a single `RLock` around all mutation/read paths. This is the
 MVCC structures are out of scope for v1.
 
 ### Persistence: WAL → Collection → Snapshot → Recovery
+
 Designed as one story, traced through a single `upsert`:
 
 1. **WAL** (`vectordb/storage/wal.py`) appends a length-prefixed msgpack
@@ -77,6 +81,7 @@ trade a small durability window for higher throughput — a deliberate v1
 choice, not an oversight.
 
 ### API layer (`vectordb/api/`)
+
 `main.py` uses a FastAPI `lifespan` hook: `Registry` opens all existing
 collections on startup, and flushes+closes every collection on shutdown —
 the clean-shutdown complement to crash recovery. `routes.py` is a thin REST
@@ -85,6 +90,7 @@ straight into `Collection`. `schemas.py` is the Pydantic validation boundary
 for untrusted HTTP input.
 
 ### Status at end of milestone 1
+
 Working end-to-end: create a collection, upsert/delete/search vectors over
 HTTP, kill the process, restart, and prior writes survive. No ANN index yet
 — `FlatIndex` is O(n) per query, correctness-first.
@@ -99,9 +105,29 @@ stays fast as collection size grows — while keeping `FlatIndex` around as
 the ground-truth baseline HNSW's recall is measured against.
 
 Steps (tracked as they land):
-- [ ] ADR 0001 — HNSW vs IVF/PQ, why HNSW was chosen
+
+- [x] ADR 0001 — HNSW vs IVF/PQ, why HNSW was chosen
 - [ ] Core data structures (Node, layered graph, layer assignment)
 - [ ] Insert (greedy search + neighbor-selection heuristic)
 - [ ] Search (layered greedy descent + `ef_search`)
 - [ ] Recall tests against `FlatIndex` ground truth
 - [ ] Wire into `Collection`/API as a selectable index type
+
+### ADR 0001 — HNSW vs IVF/PQ
+
+Decision: build HNSW, not IVF or IVF-PQ. Full writeup in
+[`docs/adr/0001-hnsw-vs-ivf.md`](adr/0001-hnsw-vs-ivf.md); the short version:
+
+- IVF needs an upfront k-means training pass, which fights the
+  insert-one-vector-at-a-time model already built in `Collection.upsert`.
+  HNSW has no training step — a vector inserts directly into the graph.
+- PQ is a compression technique, not an indexing structure, and compression
+  is explicitly out of v1 scope (README) — v1 stays full-precision float32
+  everywhere. Building PQ now would compress vectors for an index that
+  doesn't need it yet.
+- Tradeoff accepted: HNSW's memory footprint (full vectors + multi-layer
+  edge lists) is higher than IVF-PQ's, and deletion is harder than
+  `FlatIndex`'s tombstone-and-ignore approach, because removing a graph
+  node can disconnect neighbors that pointed to it — not just leak one
+  dead result. Full delete support is deferred to its own roadmap item;
+  the HNSW index being built now is insert/search only until that lands.
