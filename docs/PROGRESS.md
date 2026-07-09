@@ -107,7 +107,7 @@ the ground-truth baseline HNSW's recall is measured against.
 Steps (tracked as they land):
 
 - [x] ADR 0001 — HNSW vs IVF/PQ, why HNSW was chosen
-- [ ] Core data structures (Node, layered graph, layer assignment)
+- [x] Core data structures (Node, layered graph, layer assignment)
 - [ ] Insert (greedy search + neighbor-selection heuristic)
 - [ ] Search (layered greedy descent + `ef_search`)
 - [ ] Recall tests against `FlatIndex` ground truth
@@ -131,3 +131,31 @@ Decision: build HNSW, not IVF or IVF-PQ. Full writeup in
   node can disconnect neighbors that pointed to it — not just leak one
   dead result. Full delete support is deferred to its own roadmap item;
   the HNSW index being built now is insert/search only until that lands.
+
+### Core data structures (`vectordb/core/hnsw/index.py`)
+
+`HNSWIndex` scaffolding: no insert/search algorithm yet, just the graph
+representation and layer assignment those algorithms build on next.
+
+- **Node representation**: parallel dicts keyed by point id
+  (`_vectors`, `_metadata`, `_neighbors`), matching `FlatIndex`'s style
+  rather than introducing a separate `Node` class per vertex — cheaper
+  (no per-vertex object allocation) and consistent with the rest of the
+  codebase.
+- **`_neighbors[point_id]`** is a list of adjacency lists, one per layer
+  the node exists on — `_neighbors[id][0]` is that node's layer-0
+  neighbors, `_neighbors[id][1]` its layer-1 neighbors (if it goes that
+  high), etc.
+- **`_random_level()`** assigns each new node's max layer via
+  `int(-ln(random()) * (1/ln(M)))` — an exponential-decay draw, so
+  ~1-1/M of nodes stop at layer 0, and each layer up shrinks by roughly a
+  factor of `M` (verified empirically: 20k draws at `M=16` gave layer
+  counts 18815 / 1108 / 70 / 6 / 1 — each roughly 1/16th of the last).
+- **`_entry_point`/`_entry_layer`**: the fixed node every search starts
+  from — always whichever node currently sits on the highest layer in the
+  graph. Set once insert lands (next step); a brand-new empty index has
+  no entry point yet.
+- **`M` vs `M_max0`**: layer 0 gets double the max-neighbors-per-node
+  budget (`2*M`) of every other layer, since it holds every node and
+  benefits most from extra connectivity for recall — same choice the
+  original paper makes.
