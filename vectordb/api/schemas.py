@@ -7,6 +7,7 @@ class CreateCollectionRequest(BaseModel):
     name: str
     dim: int = Field(gt=0)
     metric: str = "l2"
+    index_type: str = "flat"
 
 
 class UpsertRequest(BaseModel):
@@ -35,3 +36,5 @@ class StatsResponse(BaseModel):
     dim: int
     metric: str
     tombstoned: int
+    entry_point: str | None = None
+    max_layer: int | None = None

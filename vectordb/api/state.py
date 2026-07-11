@@ -27,15 +27,16 @@ class Registry:
             self._reopen(name)
 
     def _reopen(self, name: str) -> Collection:
-        # dim/metric are recovered from the snapshot header itself; pass
-        # placeholders since recover() only uses them when no snapshot exists.
-        collection = Collection(name, dim=1, metric="l2", data_dir=self.data_dir)
+        # dim/metric/index_type are recovered from the snapshot header
+        # itself; pass placeholders since recover() only uses them when no
+        # snapshot exists.
+        collection = Collection(name, dim=1, metric="l2", data_dir=self.data_dir, index_type="flat")
         self.collections[name] = collection
         return collection
 
-    def create(self, name: str, dim: int, metric: str) -> Collection:
+    def create(self, name: str, dim: int, metric: str, index_type: str = "flat") -> Collection:
         with self._lock:
-            collection = Collection(name, dim=dim, metric=metric, data_dir=self.data_dir)
+            collection = Collection(name, dim=dim, metric=metric, data_dir=self.data_dir, index_type=index_type)
             self.collections[name] = collection
             return collection
 

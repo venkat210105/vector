@@ -111,8 +111,8 @@ Steps (tracked as they land):
 - [x] Core data structures (Node, layered graph, layer assignment)
 - [x] Insert (greedy search + neighbor-selection heuristic)
 - [x] Search (layered greedy descent + `ef_search`)
-- [ ] Recall tests against `FlatIndex` ground truth
-- [ ] Wire into `Collection`/API as a selectable index type
+- [x] Recall tests against `FlatIndex` ground truth
+- [x] Wire into `Collection`/API as a selectable index type
 
 ### ADR 0001 — HNSW vs IVF/PQ
 
@@ -224,3 +224,92 @@ This is exactly the shape the algorithm is supposed to produce: small
 `ef_search` trades some recall for speed, larger `ef_search` converges to
 (near-)exact — confirming the knob actually does what the design claims,
 not just that the code runs.
+
+### Recall test suite (`tests/test_hnsw.py`)
+
+Turns the manual spot-checks above into a real, repeatable `pytest` suite.
+Key design choice: **`FlatIndex` is used directly as the ground-truth
+oracle** inside the tests (`_build_indexes` builds both an `HNSWIndex` and
+a `FlatIndex` over the identical vectors), rather than hand-rolling brute
+force again in the test file — this is literally the relationship the
+README already describes between the two indexes, so the test asserts the
+real thing rather than reimplementing a parallel truth source that could
+drift out of sync with `FlatIndex` itself.
+
+Covers:
+
+- Recall actually improves as `ef_search` grows, and stays high (≥0.95) at
+  a wide `ef_search` — not just "some number came out," a directional
+  guarantee.
+- The default `ef_search` (no override) gives high recall (≥0.9) out of
+  the box.
+- **Determinism**: same `seed` twice produces an identical graph
+  (`_entry_point`, `_entry_layer`, `_neighbors` all equal) — this is what
+  makes the recall thresholds above safe to assert on without flakiness;
+  a test whose graph shape changed randomly between runs couldn't reliably
+  assert a recall floor.
+- Basic contract checks: empty index returns no results, `search` never
+  returns more than `k`, results come back sorted nearest-first, wrong
+  vector dimension raises `ValueError` on insert, `len()` tracks inserted
+  count.
+
+8 tests, ~20s total (building two 1000-vector indexes multiple times
+across the recall tests is the dominant cost).
+
+### Wiring HNSW into `Collection`/API
+
+Touches `collection.py`, `storage/snapshot.py`, `storage/recovery.py`,
+`api/schemas.py`, `api/routes.py`, `api/state.py`.
+
+The largest integration step: HNSW existed only in memory until now. Making
+it "selectable" honestly required persistence too — a collection that
+loses everything on restart wouldn't be usable end-to-end.
+
+**Key design decision, made explicit up front:** `HNSWIndex` has no
+`delete()` (deletion tombstoning is its own roadmap item — deleting a
+graph node safely requires re-linking its former neighbors, unlike
+`FlatIndex`'s trivial tombstone). Rather than let that surface as a
+confusing crash, `Collection.delete()` explicitly checks the index type
+and raises `NotImplementedError` with a clear message *before* anything
+touches the WAL — and `routes.py` translates that into an honest HTTP
+`501 Not Implemented`, not a `500`.
+
+**Persistence for HNSW** (`storage/snapshot.py`): both index types now
+share one on-disk envelope — a length-prefixed msgpack header (carrying an
+`index_type` marker, same pattern `dim`/`metric` already used) followed by
+a numpy vector blob. `_hnsw_header`/`_load_hnsw` serialize the graph's
+actual state: vectors (as a matrix, positionally aligned to an `ids`
+list — same trick `FlatIndex`'s snapshot already used, since HNSW's
+vectors live in a dict with no natural row order), metadata, the
+`_neighbors` adjacency structure (also positionally aligned to `ids` to
+avoid storing id strings twice), and `entry_point`/`entry_layer`.
+`storage/recovery.py` gained an `index_type` param (only consulted when no
+snapshot exists yet, same as `dim`/`metric`) and now dispatches WAL replay
+to `index.insert()` for HNSW vs `index.upsert()` for `FlatIndex`, since the
+two classes don't share a method name there.
+
+**API surface**: `CreateCollectionRequest` gained `index_type: str =
+"flat"` (defaults preserve all existing behavior), `StatsResponse` gained
+optional `entry_point`/`max_layer` fields (populated for HNSW, `None` for
+flat).
+
+**Verified at three levels, not just "imports without error":**
+
+1. `tests/test_collection_hnsw.py` — `Collection` directly: upsert+search
+   round-trip, delete correctly raises, and critically **a full
+   close-and-reopen cycle preserves an HNSW collection's data** both via
+   plain WAL replay and (a separate test) via the snapshot path
+   specifically, by lowering `SNAPSHOT_EVERY_N_OPS` to force a real
+   snapshot write+load during the test.
+2. Full existing suite (12 tests total) still green — the `snapshot.py`
+   refactor didn't regress the `FlatIndex` path.
+3. A live smoke test through the actual FastAPI app (`TestClient`, not
+   mocked): create an `hnsw` collection, upsert two vectors, search
+   returns correct nearest-first results with metadata, `stats` reports
+   `entry_point`/`max_layer`, delete returns `501` with the documented
+   message. This also surfaced that `fastapi`/`pydantic`/`uvicorn`/`httpx`
+   were listed in `requirements.txt` but had never actually been
+   installed in this project's `.venv` — meaning the API layer had
+   apparently never been executed before this point. Installed from the
+   existing `requirements.txt` (no new dependencies added) to actually
+   exercise it.

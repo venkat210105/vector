@@ -17,8 +17,8 @@ def create_collection(req: CreateCollectionRequest):
     registry = get_registry()
     if req.name in registry.collections:
         raise HTTPException(status_code=409, detail=f"collection '{req.name}' already exists")
-    registry.create(req.name, req.dim, req.metric)
-    return {"name": req.name, "dim": req.dim, "metric": req.metric}
+    registry.create(req.name, req.dim, req.metric, req.index_type)
+    return {"name": req.name, "dim": req.dim, "metric": req.metric, "index_type": req.index_type}
 
 
 @router.post("/collections/{name}/vectors", status_code=204)
@@ -32,7 +32,10 @@ def upsert_vector(name: str, req: UpsertRequest):
 @router.delete("/collections/{name}/vectors/{point_id}")
 def delete_vector(name: str, point_id: str):
     collection = get_registry().get_or_404(name)
-    deleted = collection.delete(point_id)
+    try:
+        deleted = collection.delete(point_id)
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
     if not deleted:
         raise HTTPException(status_code=404, detail=f"point '{point_id}' not found")
     return {"deleted": True}

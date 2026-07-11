@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from vectordb.core.flat_index import FlatIndex
+from vectordb.core.hnsw.index import HNSWIndex
 from vectordb.core.point import Point
 from vectordb.storage import snapshot
 from vectordb.storage.recovery import recover
@@ -13,11 +14,11 @@ SNAPSHOT_EVERY_N_OPS = 1000
 
 
 class Collection:
-    """Ties a FlatIndex to its WAL + snapshot for crash-recoverable persistence.
-    One Collection per named vector collection (analogous to a Pinecone index
-    or a Postgres table)."""
+    """Ties an index (FlatIndex or HNSWIndex) to its WAL + snapshot for
+    crash-recoverable persistence. One Collection per named vector
+    collection (analogous to a Pinecone index or a Postgres table)."""
 
-    def __init__(self, name: str, dim: int, metric: str, data_dir: str | Path) -> None:
+    def __init__(self, name: str, dim: int, metric: str, data_dir: str | Path, index_type: str = "flat") -> None:
         self.name = name
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -25,17 +26,23 @@ class Collection:
         self.snapshot_path = self.data_dir / f"{name}.snapshot"
 
         self._wal = WAL(self.wal_path)
-        self.index: FlatIndex = recover(dim, metric, self.snapshot_path, self._wal)
+        self.index: FlatIndex | HNSWIndex = recover(dim, metric, index_type, self.snapshot_path, self._wal)
         self._ops_since_snapshot = 0
         self._snapshot_lock = threading.Lock()
 
     def upsert(self, point_id: str, vector: list[float] | np.ndarray, metadata: dict | None = None) -> None:
         vector = np.asarray(vector, dtype=np.float32)
         self._wal.append({"op": "upsert", "id": point_id, "vector": vector.tolist(), "metadata": metadata or {}})
-        self.index.upsert(Point(id=point_id, vector=vector, metadata=metadata or {}))
+        point = Point(id=point_id, vector=vector, metadata=metadata or {})
+        if isinstance(self.index, HNSWIndex):
+            self.index.insert(point)
+        else:
+            self.index.upsert(point)
         self._maybe_snapshot()
 
     def delete(self, point_id: str) -> bool:
+        if isinstance(self.index, HNSWIndex):
+            raise NotImplementedError("HNSW delete isn't supported yet -- see docs/PROGRESS.md roadmap")
         self._wal.append({"op": "delete", "id": point_id, "vector": None, "metadata": None})
         deleted = self.index.delete(point_id)
         self._maybe_snapshot()

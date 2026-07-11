@@ -8,30 +8,37 @@ Most AI portfolio projects call an LLM API and stop there. This one goes a level
 
 ## Status
 
-Currently implemented (v1, milestone 1 — flat baseline + API + persistence):
+**Milestone 1 — flat baseline + API + persistence:**
 
-- **Flat (brute-force) index** — exact kNN via full-matrix distance computation. Serves as the ground-truth baseline that the upcoming HNSW index's recall gets measured against, and as the always-working fallback while HNSW is under development.
+- **Flat (brute-force) index** — exact kNN via full-matrix distance computation. Serves as the ground-truth baseline HNSW's recall is measured against, and as the always-working fallback for exact results.
 - **Write-ahead log (WAL)** — every upsert/delete is appended to disk (length-prefixed msgpack, fsync'd) before being applied in memory.
 - **Snapshotting** — periodic full-state snapshots let recovery skip replaying the entire WAL history; the WAL is truncated after each snapshot.
 - **Crash recovery** — on startup, the latest snapshot is loaded and any WAL records written after it are replayed, so an unclean shutdown (`kill -9`) doesn't lose committed writes.
 - **REST API** (FastAPI) — create collections, upsert/delete vectors, search by k-nearest-neighbor, inspect stats.
 
+**Milestone 2 — HNSW approximate nearest-neighbor index:**
+
+- Layered proximity graph with randomized layer assignment, greedy-descent insert/search, and the diversity-based neighbor-selection heuristic from the original Malkov & Yashunin paper — see `docs/adr/0001-hnsw-vs-ivf.md`.
+- Selectable per-collection via the API (`index_type: "flat" | "hnsw"`), with its own snapshot persistence format sharing the same on-disk envelope as `FlatIndex`.
+- Recall verified against `FlatIndex` as ground truth (`tests/test_hnsw.py`), including the recall-vs-`ef_search` tradeoff curve.
+- **Delete is not yet supported for HNSW** — returns HTTP 501. Deleting a node from a proximity graph safely requires re-linking its former neighbors, unlike `FlatIndex`'s trivial tombstone; see Roadmap.
+
 Not yet built (see Roadmap):
 
-- HNSW approximate nearest-neighbor index (the flat index is O(n) per query — fine for correctness testing, not for scale)
+- Deletion tombstoning + compaction for HNSW
 - Concurrency layer for safe concurrent reads/writes under load
-- Deletion tombstoning + compaction (the flat index currently deletes in place; HNSW will need tombstoning since removing a node from a proximity graph mid-flight breaks graph connectivity)
 - Benchmark harness (recall@k, latency percentiles, memory footprint vs. `faiss-cpu`)
 
 ## Architecture
 
-```
+```text
 vectordb/
   core/
     point.py            # Vector + id + metadata
     distance.py          # L2 / cosine distance, batched with numpy
     flat_index.py         # Brute-force baseline index
-    hnsw/                 # (planned) approximate nearest-neighbor index
+    hnsw/
+      index.py             # HNSW: layered graph, insert, search
   storage/
     wal.py                # Append-only write-ahead log
     snapshot.py            # Full-state snapshot save/load
@@ -52,10 +59,10 @@ The tradeoff being made explicitly: fsync-per-write is durable but caps write th
 
 ## API
 
-```
-POST   /collections                        # {name, dim, metric}
+```text
+POST   /collections                        # {name, dim, metric, index_type}  -- index_type: "flat" (default) | "hnsw"
 POST   /collections/{name}/vectors          # {id, vector, metadata}
-DELETE /collections/{name}/vectors/{id}
+DELETE /collections/{name}/vectors/{id}     # 501 for hnsw collections -- deletion tombstoning not yet built
 POST   /collections/{name}/search           # {vector, k}
 GET    /collections/{name}/stats
 GET    /health
@@ -70,9 +77,14 @@ pip install -r requirements.txt
 uvicorn vectordb.api.main:app --reload
 ```
 
+See [`docs/SETUP.md`](docs/SETUP.md) for PowerShell-specific setup,
+example requests for both index types, and a restart-survival check.
+
 ## Roadmap
 
-- **HNSW index** — hierarchical navigable small-world graph for approximate nearest-neighbor search at scale, with layer assignment, greedy-descent search, and neighbor-selection heuristics per the original Malkov & Yashunin paper. See `docs/adr/0001-hnsw-vs-ivf.md` for why HNSW over IVF/PQ.
+- **HNSW deletion tombstoning + compaction** — safely removing a node from the proximity graph without breaking connectivity for its former neighbors; `FlatIndex`'s trivial tombstone-and-ignore approach doesn't transfer directly (see `docs/adr/0001-hnsw-vs-ivf.md`'s Consequences section).
 - **Concurrency** — single-writer/multiple-reader via a coarse readers-preferring RWLock; documented as the v1 scope with full copy-on-write/MVCC graph versioning as the explicit "if I had more time" answer.
 - **Benchmarking** — recall@k against brute-force ground truth, p50/p95/p99 latency, memory footprint, parameter sweeps over `M`/`ef_construction`/`ef_search`, with a `faiss-cpu` comparison row for credibility.
 - **Explicitly out of scope for v1** (and why): sharding, replication, product quantization/compression, multi-tenancy, dynamic rebalancing. Single-node correctness and rigorous benchmarking are prioritized over a half-built distributed layer — each of these gets a one-line "how I'd revisit this at scale" note rather than a partial implementation.
+
+For the detailed build log (what was built, why, and how each piece was verified), see [`docs/PROGRESS.md`](docs/PROGRESS.md). For alternatives that were considered and set aside, see [`docs/CONSIDERED_IDEAS.md`](docs/CONSIDERED_IDEAS.md).
