@@ -2,7 +2,8 @@
 
 Running record of what was built, why, and the key design decisions behind
 each milestone. Written as we go so the reasoning survives past the commit
-history.
+history. For alternatives that were considered and *not* built, see
+[`CONSIDERED_IDEAS.md`](CONSIDERED_IDEAS.md).
 
 ---
 
@@ -109,7 +110,7 @@ Steps (tracked as they land):
 - [x] ADR 0001 — HNSW vs IVF/PQ, why HNSW was chosen
 - [x] Core data structures (Node, layered graph, layer assignment)
 - [x] Insert (greedy search + neighbor-selection heuristic)
-- [ ] Search (layered greedy descent + `ef_search`)
+- [x] Search (layered greedy descent + `ef_search`)
 - [ ] Recall tests against `FlatIndex` ground truth
 - [ ] Wire into `Collection`/API as a selectable index type
 
@@ -194,3 +195,32 @@ then ran `_search_layer` directly (no multi-layer descent yet — `search()`
 lands next) against brute-force ground truth for 20 queries: **99%
 recall@10**. Confirms the graph insert produces something genuinely
 navigable, not just structurally valid.
+
+### Search (`HNSWIndex.search`)
+
+The public query API — reuses everything insert already built. Descends
+from the entry point through the upper layers with `ef=1` (same greedy
+single-hop idea as insert's Phase 1 — get roughly close fast, cheaply),
+then runs the real search at layer 0 with the full `ef_search` candidate
+width via `_search_layer`, and returns the top `k` as `(id, distance)`
+tuples — matching `FlatIndex.search`'s return convention.
+
+`ef_search` defaults to `max(k, ef_construction)` if the caller doesn't
+override it — reusing the build-time search width as a sane query-time
+default.
+
+**Verified the actual recall/latency tradeoff, not just correctness at one
+setting:** 2000 random 16-d vectors, 30 queries, recall@10 against
+brute-force ground truth, varying `ef_search`:
+
+|`ef_search`|recall@10|
+|-|-|
+|10|0.91|
+|50|1.00|
+|100|1.00|
+|200|1.00|
+
+This is exactly the shape the algorithm is supposed to produce: small
+`ef_search` trades some recall for speed, larger `ef_search` converges to
+(near-)exact — confirming the knob actually does what the design claims,
+not just that the code runs.

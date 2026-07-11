@@ -109,6 +109,29 @@ class HNSWIndex:
                 self._entry_point = point.id
                 self._entry_layer = level
 
+    def search(self, query: np.ndarray, k: int, ef_search: int | None = None) -> list[tuple[str, float]]:
+        """Approximate k-nearest-neighbor search. Descends from the entry
+        point through the upper layers greedily (ef=1, same idea as
+        insert's Phase 1 -- just get roughly close fast), then does the
+        real search at layer 0 with the full `ef_search` candidate width.
+
+        `ef_search` defaults to `max(k, ef_construction)` if not given --
+        reusing the build-time search width as a reasonable query-time
+        default. Larger `ef_search` trades query latency for recall.
+        """
+        query = np.asarray(query, dtype=np.float32)
+        with self._lock:
+            if self._entry_point is None:
+                return []
+            ef = ef_search if ef_search is not None else max(k, self.ef_construction)
+
+            nearest = self._entry_point
+            for lc in range(self._entry_layer, 0, -1):
+                nearest = self._search_layer(query, [nearest], ef=1, layer=lc)[0][1]
+
+            candidates = self._search_layer(query, [nearest], ef=ef, layer=0)
+            return [(eid, dist) for dist, eid in sorted(candidates)[:k]]
+
     def _search_layer(self, query: np.ndarray, entry_points: list[str], ef: int, layer: int) -> list[tuple[float, str]]:
         """Greedy best-first search within a single layer. Explores outward
         from `entry_points` by following graph edges -- never scans every
