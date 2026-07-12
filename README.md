@@ -23,11 +23,15 @@ Most AI portfolio projects call an LLM API and stop there. This one goes a level
 - Recall verified against `FlatIndex` as ground truth (`tests/test_hnsw.py`), including the recall-vs-`ef_search` tradeoff curve.
 - **Deletion tombstoning** — `delete()` marks a node dead without touching its edges, so other nodes that route through it stay connected; tombstoned nodes are traversed but never returned as results. Verified with a 50%-of-graph deletion stress test (100% recall@10 on survivors, zero tombstoned ids ever returned). Edge cleanup/memory reclamation (compaction) is still deferred — see Roadmap.
 
+**Benchmarks** (see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)):
+
+- Recall@10 vs `ef_search` matches theory (saturates near `ef_search≈100` on the tested dataset), verified against `faiss-cpu`'s HNSW as an external reference, not just this project's own ground truth.
+- **Honest finding, reported rather than buried**: at the scales tested (up to N=15,000), this project's pure-Python `HNSWIndex` is slower in wall-clock latency than the brute-force `FlatIndex` baseline. Instrumented distance-computation counts confirm the *algorithm* is correct (HNSW touches a shrinking fraction of the dataset as N grows — ~52% at N=3,000 and falling); comparing against faiss's compiled HNSW isolates the gap to Python interpreter overhead per node visited, not an algorithmic flaw. See the doc for the full breakdown and what closing that gap would require.
+
 Not yet built (see Roadmap):
 
 - HNSW compaction (reclaiming tombstoned nodes' memory/edges)
 - Concurrency layer for safe concurrent reads/writes under load
-- Benchmark harness (recall@k, latency percentiles, memory footprint vs. `faiss-cpu`)
 
 ## Architecture
 
@@ -84,7 +88,7 @@ example requests for both index types, and a restart-survival check.
 
 - **HNSW compaction** — deletion tombstoning is done (edges stay intact, dead nodes are traversed-through but never returned), but tombstoned nodes still consume memory and get walked on every search forever; compaction is the still-missing pass that actually reclaims them.
 - **Concurrency** — single-writer/multiple-reader via a coarse readers-preferring RWLock; documented as the v1 scope with full copy-on-write/MVCC graph versioning as the explicit "if I had more time" answer.
-- **Benchmarking** — recall@k against brute-force ground truth, p50/p95/p99 latency, memory footprint, parameter sweeps over `M`/`ef_construction`/`ef_search`, with a `faiss-cpu` comparison row for credibility.
+- **Closing the wall-clock gap found in benchmarking** — batching distance computations across a candidate frontier instead of one node at a time (or moving the hot path to compiled code) to let HNSW's already-measured algorithmic advantage actually show up in latency; see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 - **Explicitly out of scope for v1** (and why): sharding, replication, product quantization/compression, multi-tenancy, dynamic rebalancing. Single-node correctness and rigorous benchmarking are prioritized over a half-built distributed layer — each of these gets a one-line "how I'd revisit this at scale" note rather than a partial implementation.
 
 For the detailed build log (what was built, why, and how each piece was verified), see [`docs/PROGRESS.md`](docs/PROGRESS.md). For alternatives that were considered and set aside, see [`docs/CONSIDERED_IDEAS.md`](docs/CONSIDERED_IDEAS.md).

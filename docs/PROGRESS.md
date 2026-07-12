@@ -397,3 +397,49 @@ sit in `_deleted` forever even after being "re-added").
   surviving a full close-and-reopen restart cycle (tombstone state is
   already part of the existing HNSW snapshot format from Milestone 2's
   `deleted` field — no snapshot format changes needed).
+
+---
+
+## Milestone 4 — Benchmark harness
+
+**Goal:** turn "I built HNSW" into a measured claim — recall@k, latency
+percentiles, memory footprint, parameter sweeps, and a `faiss-cpu`
+comparison row for credibility, per the roadmap.
+
+Full report: [`docs/BENCHMARKS.md`](BENCHMARKS.md). Reproducible via
+`python -m benchmarks.run_benchmark`
+([`benchmarks/run_benchmark.py`](../benchmarks/run_benchmark.py)).
+
+**The headline result is not flattering, and that's deliberate to report
+honestly rather than bury:** at the scales tested (up to N=15,000), this
+project's pure-Python `HNSWIndex` is *slower in wall-clock time* than the
+brute-force `FlatIndex` it's supposed to beat. Chased this down properly
+rather than either hiding it or accepting it at face value:
+
+- **Confirmed the algorithm itself is correct**: instrumented actual
+  distance-computation counts per query. At N=3,000, HNSW touches ~52% as
+  many vectors as brute force would, and that ratio was shrinking as N
+  grew across 500/1,000/3,000 — exactly the sub-linear scaling the
+  algorithm promises.
+- **Isolated the gap to implementation, not algorithm**, by comparing
+  against `faiss-cpu`'s HNSW at the identical N=3,000: faiss's HNSW beat
+  `FlatIndex` by ~3.5x in wall clock at the same point ours lost by ~12x.
+  Same algorithm, compiled vs pure-Python — the difference is `FlatIndex`'s
+  `l2_batch` does one vectorized numpy call over all N vectors (no
+  per-comparison Python overhead), while `HNSWIndex._search_layer` pays
+  full CPython interpreter cost (heap push/pop, set lookup, function call)
+  *per node visited*, one at a time. Fewer total comparisons doesn't win
+  if each one costs far more than a batched call's amortized cost.
+- This is a real, articulable limitation, not a hidden one: closing it
+  would mean batching distance computations across a candidate frontier
+  instead of one node at a time, or moving the hot path to compiled code —
+  a concrete "how I'd revisit this" answer rather than a vague one.
+
+Also measured: recall@10 vs `ef_search` (matches theory, saturates at
+`ef_search≈100` for this dataset), memory footprint via an isolated
+subprocess RSS-delta measurement (to avoid one index's allocations
+contaminating the next), build time (ours: ~240x slower than faiss at
+N=3,000, consistent with the same per-node Python overhead), and a small
+`M` sweep (inconclusive at this dataset size — recall saturated across all
+tested `M` values, noted as a limitation of that specific run rather than
+papered over as a finding).

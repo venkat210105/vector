@@ -6,3 +6,4 @@ msgpack
 psutil
 pytest
 httpx
+faiss-cpu
