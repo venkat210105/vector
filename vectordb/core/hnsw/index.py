@@ -5,7 +5,7 @@ import threading
 
 import numpy as np
 
-from vectordb.core.distance import DISTANCE_FNS
+from vectordb.core.distance import DISTANCE_BATCH_FNS, DISTANCE_FNS
 from vectordb.core.point import Point
 
 
@@ -19,12 +19,18 @@ class HNSWIndex:
     a few hops before refining locally.
     """
 
+    # Below this many unvisited neighbors, a scalar `_distance` call per
+    # neighbor beats one `_distance_batch` call -- np.stack + numpy
+    # dispatch overhead dominates at small sizes. See docs/SETBACKS.md.
+    _BATCH_THRESHOLD = 6
+
     def __init__(self, dim: int, metric: str = "l2", M: int = 16, ef_construction: int = 200, seed: int | None = None) -> None:
         if metric not in DISTANCE_FNS:
             raise ValueError(f"unknown metric: {metric}")
         self.dim = dim
         self.metric = metric
         self._distance = DISTANCE_FNS[metric]
+        self._distance_batch = DISTANCE_BATCH_FNS[metric]
 
         # Max neighbors per node per layer. Layer 0 gets 2*M since it holds
         # every node and benefits most from extra connectivity for recall.
@@ -180,6 +186,13 @@ class HNSWIndex:
         still empty (e.g. every node visited so far is tombstoned), that
         "worst" comparison is treated as infinitely bad, so expansion never
         stops early just because nothing live has turned up yet.
+
+        Distances to a popped node's neighbors are computed with one
+        `_distance_batch` call over the unvisited neighbor list when that
+        list is large enough to be worth it (`_BATCH_THRESHOLD`), and with
+        individual `_distance` calls otherwise -- a pure per-call `np.stack`
+        + numpy-dispatch cost makes batching a net loss below that size.
+        See docs/SETBACKS.md for the measurements behind this threshold.
         """
         visited = set(entry_points)
         candidates = [(self._dist_to(query, ep), ep) for ep in entry_points]
@@ -193,11 +206,17 @@ class HNSWIndex:
             if dist_c > worst_found and len(found) >= ef:
                 break
 
-            for neighbor_id in self._neighbors[c][layer]:
-                if neighbor_id in visited:
-                    continue
-                visited.add(neighbor_id)
-                dist_n = self._dist_to(query, neighbor_id)
+            unvisited = [nid for nid in self._neighbors[c][layer] if nid not in visited]
+            if not unvisited:
+                continue
+            visited.update(unvisited)
+            if len(unvisited) >= self._BATCH_THRESHOLD:
+                neighbor_matrix = np.stack([self._vectors[nid] for nid in unvisited])
+                neighbor_dists = [float(d) for d in self._distance_batch(query, neighbor_matrix)]
+            else:
+                neighbor_dists = [self._dist_to(query, nid) for nid in unvisited]
+
+            for neighbor_id, dist_n in zip(unvisited, neighbor_dists):
                 worst_found = -found[0][0] if found else float("inf")
                 if dist_n < worst_found or len(found) < ef:
                     heapq.heappush(candidates, (dist_n, neighbor_id))

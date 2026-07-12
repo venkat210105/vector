@@ -7,3 +7,4 @@ psutil
 pytest
 httpx
 faiss-cpu
+matplotlib

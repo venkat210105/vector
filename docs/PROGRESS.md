@@ -3,7 +3,9 @@
 Running record of what was built, why, and the key design decisions behind
 each milestone. Written as we go so the reasoning survives past the commit
 history. For alternatives that were considered and *not* built, see
-[`CONSIDERED_IDEAS.md`](CONSIDERED_IDEAS.md).
+[`CONSIDERED_IDEAS.md`](CONSIDERED_IDEAS.md). For real bugs and
+underperformance hit along the way — root cause and what actually fixed
+them — see [`SETBACKS.md`](SETBACKS.md).
 
 ---
 
@@ -343,6 +345,10 @@ heaps were populated together for every discovered node; now `found` only
 grows for live nodes.
 
 ### A real bug this surfaced
+
+Full writeup with root cause: [`SETBACKS.md` § Setback
+1](SETBACKS.md#setback-1-deleting-the-graphs-only-point-crashed-the-next-insertsearch).
+Short version:
 
 Deleting the graph's *only* point left `_entry_point` referencing a dead
 node with zero live neighbors — the next `insert()`/`search()` crashed
