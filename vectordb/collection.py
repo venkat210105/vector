@@ -41,8 +41,6 @@ class Collection:
         self._maybe_snapshot()
 
     def delete(self, point_id: str) -> bool:
-        if isinstance(self.index, HNSWIndex):
-            raise NotImplementedError("HNSW delete isn't supported yet -- see docs/PROGRESS.md roadmap")
         self._wal.append({"op": "delete", "id": point_id, "vector": None, "metadata": None})
         deleted = self.index.delete(point_id)
         self._maybe_snapshot()

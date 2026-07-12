@@ -61,13 +61,12 @@ curl.exe -X POST http://127.0.0.1:8000/collections/demo/search `
 # stats -- note entry_point/max_layer only populate for hnsw collections
 curl.exe http://127.0.0.1:8000/collections/demo/stats
 
-# delete -- expect 501 for hnsw (not yet supported), 200 for a flat collection
+# delete -- works for both index types (tombstoned for hnsw, in-place for flat)
 curl.exe -X DELETE http://127.0.0.1:8000/collections/demo/vectors/a
 ```
 
-To try the same thing with the brute-force baseline instead, create a
-collection with `"index_type": "flat"` (or omit it — that's the default)
-and delete will actually succeed instead of returning `501`.
+Try the same thing with the brute-force baseline by creating a collection
+with `"index_type": "flat"` (or omit it — that's the default) instead.
 
 ## Run the test suite
 

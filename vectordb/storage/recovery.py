@@ -34,8 +34,5 @@ def recover(dim: int, metric: str, index_type: str, snapshot_path: str | Path, w
             else:
                 index.upsert(point)
         elif record["op"] == "delete":
-            # HNSWIndex has no delete() -- Collection.delete() rejects
-            # deletes on HNSW collections before they ever reach the WAL,
-            # so a delete record here always implies a FlatIndex.
             index.delete(record["id"])
     return index

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from vectordb.collection import Collection
 
@@ -22,12 +21,32 @@ class TestCollectionHNSW:
         assert [r["id"] for r in results] == ["a", "c"]
         assert results[0]["metadata"] == {"tag": "a"}
 
-    def test_delete_is_rejected_with_clear_error(self, tmp_path: Path):
+    def test_delete_removes_point_from_search_results(self, tmp_path: Path):
         collection = _make_hnsw_collection(tmp_path)
         collection.upsert("a", [1.0, 0.0, 0.0, 0.0])
+        collection.upsert("b", [0.0, 1.0, 0.0, 0.0])
 
-        with pytest.raises(NotImplementedError):
-            collection.delete("a")
+        assert collection.delete("a") is True
+
+        results = collection.search([1.0, 0.0, 0.0, 0.0], k=10)
+        assert [r["id"] for r in results] == ["b"]
+        assert collection.stats()["tombstoned"] == 1
+
+    def test_delete_unknown_point_returns_false(self, tmp_path: Path):
+        collection = _make_hnsw_collection(tmp_path)
+        assert collection.delete("nope") is False
+
+    def test_delete_survives_restart(self, tmp_path: Path):
+        collection = _make_hnsw_collection(tmp_path)
+        collection.upsert("a", [1.0, 0.0, 0.0, 0.0])
+        collection.upsert("b", [0.0, 1.0, 0.0, 0.0])
+        collection.delete("a")
+        collection.close()
+
+        reopened = _make_hnsw_collection(tmp_path)
+        results = reopened.search([1.0, 0.0, 0.0, 0.0], k=10)
+        assert [r["id"] for r in results] == ["b"]
+        assert reopened.stats()["tombstoned"] == 1
 
     def test_survives_restart(self, tmp_path: Path):
         """The actual point of wiring HNSW into Collection: writes must

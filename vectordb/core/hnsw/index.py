@@ -16,9 +16,7 @@ class HNSWIndex:
     random subset (assigned per-node at insert time via `_random_level`),
     mirroring a skip list. Search descends from a sparse top layer down to
     layer 0, using long-range edges up top to close most of the distance in
-    a few hops before refining locally. Insert/search algorithms land in
-    follow-up commits — this is the graph representation and layer
-    assignment they'll operate on.
+    a few hops before refining locally.
     """
 
     def __init__(self, dim: int, metric: str = "l2", M: int = 16, ef_construction: int = 200, seed: int | None = None) -> None:
@@ -64,9 +62,11 @@ class HNSWIndex:
         return int(-math.log(self._rng.random()) * self._level_mult)
 
     def insert(self, point: Point) -> None:
-        """Inserts a point into the graph. Assumes `point.id` is new --
-        re-inserting an existing id is undefined until update/delete support
-        lands (roadmap item after this base index)."""
+        """Inserts a point into the graph. Assumes `point.id` is either new
+        or was previously deleted (in which case it's un-tombstoned and
+        rewired fresh, dropping its old edges) -- re-inserting an id that's
+        currently live is undefined until true upsert-with-overwrite
+        semantics land."""
         if point.vector.shape != (self.dim,):
             raise ValueError(f"expected vector of shape ({self.dim},), got {point.vector.shape}")
 
@@ -75,6 +75,7 @@ class HNSWIndex:
             self._vectors[point.id] = point.vector
             self._metadata[point.id] = point.metadata
             self._neighbors[point.id] = [[] for _ in range(level + 1)]
+            self._deleted.discard(point.id)
 
             if self._entry_point is None:
                 self._entry_point = point.id
@@ -85,9 +86,15 @@ class HNSWIndex:
             # with ef=1 (pure greedy, single best hop per layer). These
             # layers only exist to close most of the distance fast, so a
             # wide candidate list would be wasted effort here.
+            # `result` can come back empty if everything reachable at this
+            # sparse upper layer happens to be tombstoned -- `nearest`
+            # itself is still a valid node to search from at the next
+            # layer down regardless, so just keep it rather than crash.
             nearest = self._entry_point
             for lc in range(self._entry_layer, level, -1):
-                nearest = self._search_layer(point.vector, [nearest], ef=1, layer=lc)[0][1]
+                result = self._search_layer(point.vector, [nearest], ef=1, layer=lc)
+                if result:
+                    nearest = result[0][1]
 
             # Phase 2: from min(level, entry_layer) down to 0, actually wire
             # up edges using the full ef_construction candidate width. Any
@@ -103,11 +110,34 @@ class HNSWIndex:
                 for neighbor_id in chosen:
                     self._add_edge(neighbor_id, point.id, lc, max_neighbors)
 
-                nearest = candidates[0][1]
+                if candidates:
+                    nearest = candidates[0][1]
 
             if level > self._entry_layer:
                 self._entry_point = point.id
                 self._entry_layer = level
+
+    def delete(self, point_id: str) -> bool:
+        """Tombstones a point rather than removing it from the graph: its
+        edges are left fully intact so any node that routes through it to
+        reach the rest of the graph stays connected. `_search_layer`
+        traverses through tombstoned nodes but never returns them as a
+        result. Actual edge cleanup and memory reclamation is deferred to
+        a future compaction pass (roadmap) -- this alone is what makes
+        delete safe, not what makes it free.
+        """
+        with self._lock:
+            if point_id not in self._vectors or point_id in self._deleted:
+                return False
+            self._deleted.add(point_id)
+            if len(self) == 0:
+                # No live points left -- reset to the same bootstrap state
+                # a brand-new empty index starts in, so the next
+                # insert/search doesn't have to reason about a graph made
+                # entirely of tombstones.
+                self._entry_point = None
+                self._entry_layer = -1
+            return True
 
     def search(self, query: np.ndarray, k: int, ef_search: int | None = None) -> list[tuple[str, float]]:
         """Approximate k-nearest-neighbor search. Descends from the entry
@@ -127,7 +157,9 @@ class HNSWIndex:
 
             nearest = self._entry_point
             for lc in range(self._entry_layer, 0, -1):
-                nearest = self._search_layer(query, [nearest], ef=1, layer=lc)[0][1]
+                result = self._search_layer(query, [nearest], ef=1, layer=lc)
+                if result:
+                    nearest = result[0][1]
 
             candidates = self._search_layer(query, [nearest], ef=ef, layer=0)
             return [(eid, dist) for dist, eid in sorted(candidates)[:k]]
@@ -137,21 +169,27 @@ class HNSWIndex:
         from `entry_points` by following graph edges -- never scans every
         node -- and returns up to `ef` (distance, id) pairs, nearest first.
 
-        Maintains two heaps: `candidates` (min-heap, nodes still to expand)
-        and `found` (max-heap via negated distance, the best `ef` results
-        seen so far). Stops expanding once the nearest unexplored candidate
-        is farther than the worst of the `ef` results already found --
-        nothing left in the frontier can possibly improve on that.
+        Maintains two heaps: `candidates` (min-heap, nodes still to expand
+        -- includes tombstoned nodes, since they must stay traversable for
+        connectivity) and `found` (max-heap via negated distance, the best
+        `ef` *live* results seen so far -- tombstoned nodes never enter
+        this one, so they can never be returned, only passed through).
+        Stops expanding once the nearest unexplored candidate is farther
+        than the worst of the `ef` results already found -- nothing left
+        in the frontier can possibly improve on that. While `found` is
+        still empty (e.g. every node visited so far is tombstoned), that
+        "worst" comparison is treated as infinitely bad, so expansion never
+        stops early just because nothing live has turned up yet.
         """
         visited = set(entry_points)
         candidates = [(self._dist_to(query, ep), ep) for ep in entry_points]
         heapq.heapify(candidates)
-        found = [(-dist, eid) for dist, eid in candidates]
+        found = [(-dist, eid) for dist, eid in candidates if eid not in self._deleted]
         heapq.heapify(found)
 
         while candidates:
             dist_c, c = heapq.heappop(candidates)
-            worst_found = -found[0][0]
+            worst_found = -found[0][0] if found else float("inf")
             if dist_c > worst_found and len(found) >= ef:
                 break
 
@@ -160,12 +198,13 @@ class HNSWIndex:
                     continue
                 visited.add(neighbor_id)
                 dist_n = self._dist_to(query, neighbor_id)
-                worst_found = -found[0][0]
+                worst_found = -found[0][0] if found else float("inf")
                 if dist_n < worst_found or len(found) < ef:
                     heapq.heappush(candidates, (dist_n, neighbor_id))
-                    heapq.heappush(found, (-dist_n, neighbor_id))
-                    if len(found) > ef:
-                        heapq.heappop(found)
+                    if neighbor_id not in self._deleted:
+                        heapq.heappush(found, (-dist_n, neighbor_id))
+                        if len(found) > ef:
+                            heapq.heappop(found)
 
         return sorted((-dist, eid) for dist, eid in found)
 

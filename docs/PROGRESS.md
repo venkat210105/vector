@@ -98,7 +98,7 @@ HTTP, kill the process, restart, and prior writes survive. No ANN index yet
 
 ---
 
-## Milestone 2 — HNSW index (in progress)
+## Milestone 2 — HNSW index
 
 Goal: replace the O(n)-per-query flat scan with an approximate
 nearest-neighbor index (hierarchical navigable small world graph), so search
@@ -313,3 +313,87 @@ flat).
    apparently never been executed before this point. Installed from the
    existing `requirements.txt` (no new dependencies added) to actually
    exercise it.
+
+---
+
+## Milestone 3 — HNSW deletion tombstoning
+
+**Goal:** make `delete()` actually work for HNSW collections (previously a
+`501`), without breaking the guarantee the ADR already promised — that
+removing a node can't silently disconnect other nodes that route through
+it to reach the rest of the graph.
+
+### Design (`vectordb/core/hnsw/index.py`)
+
+`delete(point_id)` marks a point in `_deleted` but leaves its edges fully
+intact — no edge rewriting, no neighbor relinking. That's the entire trick:
+since the graph's topology from insert-time is never touched, every
+connectivity guarantee insert already established stays valid regardless
+of how many nodes get tombstoned later. The cost of that simplicity: dead
+nodes keep occupying memory and get walked through on every search
+forever, until a future compaction pass (still on the roadmap) actually
+prunes them. Tombstoning buys *correctness*, not *cleanup* — the ADR
+called this out explicitly in advance.
+
+`_search_layer` was changed to treat tombstoned nodes as pass-through
+only: they still get added to `candidates` (so search keeps exploring
+through them, preserving reachability to whatever's beyond) but never to
+`found` (so they can never be returned as an answer). Previously both
+heaps were populated together for every discovered node; now `found` only
+grows for live nodes.
+
+### A real bug this surfaced
+
+Deleting the graph's *only* point left `_entry_point` referencing a dead
+node with zero live neighbors — the next `insert()`/`search()` crashed
+with an `IndexError` reading `_search_layer(...)[0]` off an empty result.
+Fixed two ways:
+
+1. `delete()` now resets `_entry_point`/`_entry_layer` back to `(None,
+   -1)` — the same bootstrap state a brand-new index starts in — whenever
+   a delete empties the graph of all live points. This restores an
+   invariant the rest of the code already assumed everywhere else
+   (`entry_point is None` ⇔ "no live points exist").
+2. A second, subtler case survived that fix: during the *upper-layer*
+   greedy descent (`ef=1`), a layer's search can legitimately come back
+   with zero live results even when live points exist elsewhere in the
+   graph — upper layers are sparse by construction, and if enough of the
+   handful of nodes living there happen to be tombstoned, the whole
+   locally-reachable neighborhood at that one layer can be dead. Caught
+   this with a 500-point / 50-deleted stress test, not by reasoning alone.
+   Fix: if a layer's search comes back empty, keep the previous `nearest`
+   rather than crash — it's still a valid node to search from at the next
+   layer down (every node holds adjacency lists for every layer up to its
+   own height), the search just doesn't get to improve position at that
+   one layer. Applied consistently across `insert()`'s Phase 1, Phase 2,
+   and `search()`'s upper-layer loop.
+
+`insert()` also now clears `point_id` from `_deleted` on insert, so a
+delete-then-reinsert of the same id correctly makes it live again with
+fresh edges, rather than permanently invisible (it would otherwise still
+sit in `_deleted` forever even after being "re-added").
+
+### Verified, not just "doesn't crash"
+
+- 500 points, delete every 10th (50 total, deliberately including
+  whatever bridge nodes happen to fall on that pattern): **100% recall@10**
+  against `FlatIndex`-minus-the-same-deletes, and zero deleted ids ever
+  returned.
+- Stress test at 50% deletion (250 of 500): still **100% recall@10**, zero
+  deleted ids returned — this is what actually caught the upper-layer
+  empty-result bug above; the 10%-deletion test alone wasn't aggressive
+  enough to hit it.
+- `tests/test_hnsw.py::TestHNSWDelete` (7 tests): unknown-id/double-delete
+  return `False`, deleted points never resurface in search, `stats()`
+  reports tombstoned count correctly, delete-then-reinsert makes a point
+  live again, the only-point-deleted regression case, and the
+  bridge-node/recall stress test.
+- `Collection`/API layer: `Collection.delete()` no longer special-cases
+  HNSW (the `NotImplementedError` → `501` path is gone, since it's real
+  functionality now, not a documented gap) — `routes.py`'s `DELETE
+  /collections/{name}/vectors/{point_id}` now returns a normal `200` for
+  HNSW collections too. `tests/test_collection_hnsw.py` covers delete
+  removing a point from search results, unknown-id delete, and delete
+  surviving a full close-and-reopen restart cycle (tombstone state is
+  already part of the existing HNSW snapshot format from Milestone 2's
+  `deleted` field — no snapshot format changes needed).

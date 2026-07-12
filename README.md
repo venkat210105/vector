@@ -21,11 +21,11 @@ Most AI portfolio projects call an LLM API and stop there. This one goes a level
 - Layered proximity graph with randomized layer assignment, greedy-descent insert/search, and the diversity-based neighbor-selection heuristic from the original Malkov & Yashunin paper — see `docs/adr/0001-hnsw-vs-ivf.md`.
 - Selectable per-collection via the API (`index_type: "flat" | "hnsw"`), with its own snapshot persistence format sharing the same on-disk envelope as `FlatIndex`.
 - Recall verified against `FlatIndex` as ground truth (`tests/test_hnsw.py`), including the recall-vs-`ef_search` tradeoff curve.
-- **Delete is not yet supported for HNSW** — returns HTTP 501. Deleting a node from a proximity graph safely requires re-linking its former neighbors, unlike `FlatIndex`'s trivial tombstone; see Roadmap.
+- **Deletion tombstoning** — `delete()` marks a node dead without touching its edges, so other nodes that route through it stay connected; tombstoned nodes are traversed but never returned as results. Verified with a 50%-of-graph deletion stress test (100% recall@10 on survivors, zero tombstoned ids ever returned). Edge cleanup/memory reclamation (compaction) is still deferred — see Roadmap.
 
 Not yet built (see Roadmap):
 
-- Deletion tombstoning + compaction for HNSW
+- HNSW compaction (reclaiming tombstoned nodes' memory/edges)
 - Concurrency layer for safe concurrent reads/writes under load
 - Benchmark harness (recall@k, latency percentiles, memory footprint vs. `faiss-cpu`)
 
@@ -62,7 +62,7 @@ The tradeoff being made explicitly: fsync-per-write is durable but caps write th
 ```text
 POST   /collections                        # {name, dim, metric, index_type}  -- index_type: "flat" (default) | "hnsw"
 POST   /collections/{name}/vectors          # {id, vector, metadata}
-DELETE /collections/{name}/vectors/{id}     # 501 for hnsw collections -- deletion tombstoning not yet built
+DELETE /collections/{name}/vectors/{id}
 POST   /collections/{name}/search           # {vector, k}
 GET    /collections/{name}/stats
 GET    /health
@@ -82,7 +82,7 @@ example requests for both index types, and a restart-survival check.
 
 ## Roadmap
 
-- **HNSW deletion tombstoning + compaction** — safely removing a node from the proximity graph without breaking connectivity for its former neighbors; `FlatIndex`'s trivial tombstone-and-ignore approach doesn't transfer directly (see `docs/adr/0001-hnsw-vs-ivf.md`'s Consequences section).
+- **HNSW compaction** — deletion tombstoning is done (edges stay intact, dead nodes are traversed-through but never returned), but tombstoned nodes still consume memory and get walked on every search forever; compaction is the still-missing pass that actually reclaims them.
 - **Concurrency** — single-writer/multiple-reader via a coarse readers-preferring RWLock; documented as the v1 scope with full copy-on-write/MVCC graph versioning as the explicit "if I had more time" answer.
 - **Benchmarking** — recall@k against brute-force ground truth, p50/p95/p99 latency, memory footprint, parameter sweeps over `M`/`ef_construction`/`ef_search`, with a `faiss-cpu` comparison row for credibility.
 - **Explicitly out of scope for v1** (and why): sharding, replication, product quantization/compression, multi-tenancy, dynamic rebalancing. Single-node correctness and rigorous benchmarking are prioritized over a half-built distributed layer — each of these gets a one-line "how I'd revisit this at scale" note rather than a partial implementation.

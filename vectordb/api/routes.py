@@ -32,10 +32,7 @@ def upsert_vector(name: str, req: UpsertRequest):
 @router.delete("/collections/{name}/vectors/{point_id}")
 def delete_vector(name: str, point_id: str):
     collection = get_registry().get_or_404(name)
-    try:
-        deleted = collection.delete(point_id)
-    except NotImplementedError as e:
-        raise HTTPException(status_code=501, detail=str(e))
+    deleted = collection.delete(point_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"point '{point_id}' not found")
     return {"deleted": True}
