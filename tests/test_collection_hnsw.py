@@ -9,6 +9,10 @@ def _make_hnsw_collection(tmp_path: Path, name: str = "col") -> Collection:
     return Collection(name, dim=4, metric="l2", data_dir=tmp_path, index_type="hnsw")
 
 
+def _make_flat_collection(tmp_path: Path, name: str = "col") -> Collection:
+    return Collection(name, dim=4, metric="l2", data_dir=tmp_path, index_type="flat")
+
+
 class TestCollectionHNSW:
     def test_upsert_and_search_round_trip(self, tmp_path: Path):
         collection = _make_hnsw_collection(tmp_path)
@@ -20,6 +24,23 @@ class TestCollectionHNSW:
 
         assert [r["id"] for r in results] == ["a", "c"]
         assert results[0]["metadata"] == {"tag": "a"}
+
+    def test_ef_search_override_still_finds_correct_result(self, tmp_path: Path):
+        collection = _make_hnsw_collection(tmp_path)
+        collection.upsert("a", [1.0, 0.0, 0.0, 0.0])
+        collection.upsert("b", [0.0, 1.0, 0.0, 0.0])
+
+        results = collection.search([1.0, 0.0, 0.0, 0.0], k=1, ef_search=50)
+        assert results[0]["id"] == "a"
+
+    def test_ef_search_is_ignored_for_flat_collections(self, tmp_path: Path):
+        """FlatIndex.search() has no ef_search concept -- passing one for a
+        flat collection shouldn't error, it should just be a no-op."""
+        collection = _make_flat_collection(tmp_path)
+        collection.upsert("a", [1.0, 0.0, 0.0, 0.0])
+
+        results = collection.search([1.0, 0.0, 0.0, 0.0], k=1, ef_search=50)
+        assert results[0]["id"] == "a"
 
     def test_delete_removes_point_from_search_results(self, tmp_path: Path):
         collection = _make_hnsw_collection(tmp_path)

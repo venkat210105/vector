@@ -46,9 +46,12 @@ class Collection:
         self._maybe_snapshot()
         return deleted
 
-    def search(self, query: list[float] | np.ndarray, k: int) -> list[dict]:
+    def search(self, query: list[float] | np.ndarray, k: int, ef_search: int | None = None) -> list[dict]:
         query = np.asarray(query, dtype=np.float32)
-        results = self.index.search(query, k)
+        if isinstance(self.index, HNSWIndex):
+            results = self.index.search(query, k, ef_search=ef_search)
+        else:
+            results = self.index.search(query, k)
         return [{"id": pid, "distance": dist, "metadata": self.index._metadata.get(pid, {})} for pid, dist in results]
 
     def stats(self) -> dict:

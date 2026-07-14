@@ -19,6 +19,7 @@ class UpsertRequest(BaseModel):
 class SearchRequest(BaseModel):
     vector: list[float]
     k: int = Field(default=10, gt=0)
+    ef_search: int | None = Field(default=None, gt=0)
 
 
 class SearchResult(BaseModel):

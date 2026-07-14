@@ -43,7 +43,7 @@ def search(name: str, req: SearchRequest):
     collection = get_registry().get_or_404(name)
     if len(req.vector) != collection.index.dim:
         raise HTTPException(status_code=400, detail=f"expected vector of dim {collection.index.dim}, got {len(req.vector)}")
-    results = collection.search(req.vector, req.k)
+    results = collection.search(req.vector, req.k, ef_search=req.ef_search)
     return {"results": results}
 
 
