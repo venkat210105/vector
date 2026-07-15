@@ -39,3 +39,14 @@ class StatsResponse(BaseModel):
     tombstoned: int
     entry_point: str | None = None
     max_layer: int | None = None
+
+
+class CollectionSummary(BaseModel):
+    name: str
+    dim: int
+    metric: str
+    index_type: str
+
+
+class ListCollectionsResponse(BaseModel):
+    collections: list[CollectionSummary]

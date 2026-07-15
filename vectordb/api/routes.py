@@ -2,14 +2,32 @@ from fastapi import APIRouter, HTTPException
 
 from vectordb.api.schemas import (
     CreateCollectionRequest,
+    ListCollectionsResponse,
     SearchRequest,
     SearchResponse,
     StatsResponse,
     UpsertRequest,
 )
 from vectordb.api.state import get_registry
+from vectordb.core.hnsw.index import HNSWIndex
 
 router = APIRouter()
+
+
+@router.get("/collections", response_model=ListCollectionsResponse)
+def list_collections():
+    registry = get_registry()
+    return {
+        "collections": [
+            {
+                "name": name,
+                "dim": collection.index.dim,
+                "metric": collection.index.metric,
+                "index_type": "hnsw" if isinstance(collection.index, HNSWIndex) else "flat",
+            }
+            for name, collection in registry.collections.items()
+        ]
+    }
 
 
 @router.post("/collections", status_code=201)

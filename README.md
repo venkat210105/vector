@@ -64,10 +64,11 @@ The tradeoff being made explicitly: fsync-per-write is durable but caps write th
 ## API
 
 ```text
+GET    /collections                        # list all open collections
 POST   /collections                        # {name, dim, metric, index_type}  -- index_type: "flat" (default) | "hnsw"
 POST   /collections/{name}/vectors          # {id, vector, metadata}
 DELETE /collections/{name}/vectors/{id}
-POST   /collections/{name}/search           # {vector, k}
+POST   /collections/{name}/search           # {vector, k, ef_search}  -- ef_search optional, hnsw only
 GET    /collections/{name}/stats
 GET    /health
 ```
