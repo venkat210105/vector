@@ -13,7 +13,7 @@ export function buildEvents(trace) {
 }
 
 // State after replaying events[0..index] inclusive.
-export function walkState(events, index, results, totalNodes) {
+export function walkState(events, index, results) {
   const visited = new Set();
   const walkedEdges = new Map();
   let currentLayerEntry = null;
@@ -48,6 +48,5 @@ export function walkState(events, index, results, totalNodes) {
     results: results,
     showResults: finished,
     visitedCount: visited.size,
-    totalNodes,
   };
 }

@@ -1,70 +1,85 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { getGraph, listCollections, searchTrace } from "./api.js";
+import CollectionPicker from "./components/CollectionPicker.jsx";
+import GraphSummary from "./components/GraphSummary.jsx";
+import LayerBar from "./components/LayerBar.jsx";
+import ReplayControls from "./components/ReplayControls.jsx";
+import SearchControls from "./components/SearchControls.jsx";
+import WalkStats from "./components/WalkStats.jsx";
 import { DEMO, randomQuery, seedDemo } from "./demo.js";
 import GraphCanvas from "./GraphCanvas.jsx";
-import { buildEvents, walkState } from "./walk.js";
+import { useReplay } from "./hooks/useReplay.js";
+import { walkState } from "./walk.js";
 
+// App is the "coordinator". It owns the data (what the server told us) and
+// the user's choices (sliders, selected layer), and hands pieces of them
+// down to small components. Read it top to bottom:
+//   1. state          -- what the page remembers
+//   2. loading data   -- talking to the backend
+//   3. derived values -- things computed from state
+//   4. the JSX        -- what to draw
 export default function App() {
+  // ---- 1. State ---------------------------------------------------------
   const [collections, setCollections] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [graph, setGraph] = useState(null);
+  const [selected, setSelected] = useState(null); // the collection being viewed
+  const [graph, setGraph] = useState(null); // nodes + edges from the backend
+  const [trace, setTrace] = useState(null); // the last search's recorded walk
   const [error, setError] = useState(null);
-  const [seeding, setSeeding] = useState(null); // progress 0..1 while seeding
+  const [seedingProgress, setSeedingProgress] = useState(null); // null = not seeding
 
   const [k, setK] = useState(5);
   const [efSearch, setEfSearch] = useState(20);
-  const [layer, setLayer] = useState(0);
+  const [layer, setLayer] = useState(0); // which layer is drawn
 
-  const [trace, setTrace] = useState(null);
-  const [events, setEvents] = useState([]);
-  const [step, setStep] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState(120); // ms per step
+  // All playback state (step, playing, speed, timers) lives in this hook.
+  const replay = useReplay(trace);
 
-  const refreshCollections = useCallback(async () => {
-    const list = await listCollections();
-    setCollections(list);
-    return list;
-  }, []);
+  // ---- 2. Loading data --------------------------------------------------
 
-  const loadGraph = useCallback(async (name) => {
-    setTrace(null);
-    setEvents([]);
-    setPlaying(false);
-    setGraph(await getGraph(name, 600));
-    setLayer(0);
-  }, []);
-
-  const guard = useCallback(async (fn) => {
+  // Runs an async action and shows any error in the sidebar instead of
+  // letting it vanish silently.
+  const guard = useCallback(async (action) => {
     setError(null);
     try {
-      return await fn();
+      return await action();
     } catch (e) {
       setError(e.message);
     }
   }, []);
 
+  const loadGraph = useCallback(async (name) => {
+    setTrace(null);
+    setGraph(await getGraph(name, 600));
+    setLayer(0);
+  }, []);
+
+  // LEARN: an effect with an empty dependency list `[]` runs once, when the
+  // page first loads. This is the usual place to fetch initial data.
   useEffect(() => {
     guard(async () => {
-      const list = await refreshCollections();
-      const first = list.find((c) => c.index_type === "hnsw");
-      if (first) setSelected(first);
+      const list = await listCollections();
+      setCollections(list);
+      const firstHnsw = list.find((c) => c.index_type === "hnsw");
+      if (firstHnsw) setSelected(firstHnsw);
     });
-  }, [guard, refreshCollections]);
+  }, [guard]);
 
+  // This one re-runs whenever `selected` changes: pick a collection, load
+  // its graph.
   useEffect(() => {
     if (selected) guard(() => loadGraph(selected.name));
   }, [selected, guard, loadGraph]);
 
   const createDemo = () =>
     guard(async () => {
-      setSeeding(0);
+      setSeedingProgress(0);
       try {
-        await seedDemo(setSeeding);
+        await seedDemo(setSeedingProgress);
       } finally {
-        setSeeding(null);
+        setSeedingProgress(null);
       }
-      const list = await refreshCollections();
+      const list = await listCollections();
+      setCollections(list);
       const demo = list.find((c) => c.name === DEMO.name);
       setSelected(demo);
       if (demo) await loadGraph(demo.name);
@@ -73,140 +88,77 @@ export default function App() {
   const runSearch = () =>
     guard(async () => {
       const vector = randomQuery(selected);
-      const result = await searchTrace(selected.name, { vector, k, ef_search: efSearch });
-      setTrace(result);
-      setEvents(buildEvents(result));
-      setStep(0);
-      setPlaying(true);
+      setTrace(await searchTrace(selected.name, { vector, k, ef_search: efSearch }));
     });
 
-  // Playback timer.
-  const timer = useRef(null);
-  useEffect(() => {
-    clearInterval(timer.current);
-    if (!playing) return;
-    timer.current = setInterval(() => {
-      setStep((s) => {
-        if (s >= events.length - 1) {
-          setPlaying(false);
-          return s;
-        }
-        return s + 1;
-      });
-    }, speed);
-    return () => clearInterval(timer.current);
-  }, [playing, speed, events]);
+  // ---- 3. Derived values ------------------------------------------------
+  // These are computed from state on every render. They are NOT state
+  // themselves: if you can compute something from existing state, don't
+  // store it separately, or the two copies can drift out of sync.
 
+  const hnswCollections = collections.filter((c) => c.index_type === "hnsw");
+  const liveCount = graph ? graph.nodes.filter((n) => !n.deleted).length : 0;
+
+  // The visual state of the search at the current replay step.
   const walk = useMemo(
-    () => (trace && events.length ? walkState(events, step, trace.results, graph?.total_nodes ?? 0) : null),
-    [trace, events, step, graph]
+    () => (trace && replay.events.length ? walkState(replay.events, replay.step, trace.results) : null),
+    [trace, replay.events, replay.step]
   );
 
-  // While a search is replaying, follow the layer it is currently on.
+  // While a search replays, the drawn layer follows the layer the search is
+  // currently on. (The user can still click a layer button to look elsewhere.)
+  const walkLayer = walk?.layer;
   useEffect(() => {
-    if (walk) setLayer(walk.layer);
-  }, [walk?.layer]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (walkLayer !== undefined) setLayer(walkLayer);
+  }, [walkLayer]);
 
-  const live = graph ? graph.nodes.filter((n) => !n.deleted).length : 0;
-  const pct = walk && live ? Math.round((walk.visitedCount / live) * 100) : null;
   const query = trace ? { xy: trace.query_xy } : null;
-  const hnswCollections = collections.filter((c) => c.index_type === "hnsw");
+  const hasGraph = graph && graph.nodes.length > 0;
 
+  // ---- 4. The JSX -------------------------------------------------------
   return (
     <div className="app">
       <aside className="panel">
         <h1>vector-db explorer</h1>
         <p className="muted">Watch an HNSW search walk the layered graph.</p>
 
-        <label>Collection</label>
-        <select
-          value={selected?.name ?? ""}
-          onChange={(e) => setSelected(hnswCollections.find((c) => c.name === e.target.value))}
-        >
-          {hnswCollections.length === 0 && <option value="">no HNSW collections</option>}
-          {hnswCollections.map((c) => (
-            <option key={c.name} value={c.name}>
-              {c.name} ({c.dim}d, {c.metric})
-            </option>
-          ))}
-        </select>
-        <button onClick={createDemo} disabled={seeding !== null}>
-          {seeding !== null ? `Seeding… ${Math.round(seeding * 100)}%` : `Create demo (${DEMO.points} points)`}
-        </button>
+        <CollectionPicker
+          collections={hnswCollections}
+          selected={selected}
+          onSelect={setSelected}
+          onCreateDemo={createDemo}
+          seedingProgress={seedingProgress}
+        />
 
-        {graph && (
-          <div className="stats">
-            <div><b>{live}</b> live nodes</div>
-            <div><b>{graph.max_layer + 1}</b> layers</div>
-            <div>entry: <b>{graph.entry_point}</b></div>
-            {graph.truncated && <div className="muted">showing {graph.nodes.length} of {graph.total_nodes}</div>}
-          </div>
-        )}
+        {graph && <GraphSummary graph={graph} liveCount={liveCount} />}
 
         <hr />
-        <label>k: {k}</label>
-        <input type="range" min="1" max="20" value={k} onChange={(e) => setK(+e.target.value)} />
-        <label>ef_search: {efSearch}</label>
-        <input type="range" min="1" max="200" value={efSearch} onChange={(e) => setEfSearch(+e.target.value)} />
-        <button className="primary" onClick={runSearch} disabled={!selected || !graph || graph.nodes.length === 0}>
-          Run random query
-        </button>
 
-        {events.length > 0 && (
-          <>
-            <div className="controls">
-              <button onClick={() => { setStep(0); setPlaying(true); }}>Replay</button>
-              <button onClick={() => setPlaying((p) => !p)}>{playing ? "Pause" : "Play"}</button>
-              <button onClick={() => { setPlaying(false); setStep((s) => Math.min(s + 1, events.length - 1)); }}>Step</button>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max={events.length - 1}
-              value={step}
-              onChange={(e) => { setPlaying(false); setStep(+e.target.value); }}
-            />
-            <label>speed</label>
-            <input type="range" min="20" max="600" step="20" value={620 - speed} onChange={(e) => setSpeed(620 - +e.target.value)} />
-          </>
-        )}
+        <SearchControls
+          k={k}
+          onKChange={setK}
+          efSearch={efSearch}
+          onEfSearchChange={setEfSearch}
+          onRun={runSearch}
+          disabled={!hasGraph}
+        />
 
-        {walk && (
-          <div className="stats">
-            <div>
-              step {step + 1} / {events.length} — layer <b>{walk.layer}</b>
-            </div>
-            <div>
-              nodes touched: <b>{walk.visitedCount}</b> of {live} ({pct}%)
-            </div>
-            {walk.showResults && (
-              <ol className="results">
-                {trace.results.map((r) => (
-                  <li key={r.id}>
-                    {r.id} <span className="muted">{r.distance.toFixed(3)}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        )}
+        {trace && <ReplayControls replay={replay} />}
+        {walk && <WalkStats walk={walk} liveCount={liveCount} results={trace.results} />}
         {error && <div className="error">{error}</div>}
       </aside>
 
       <main className="stage">
-        {graph && graph.nodes.length > 0 ? (
+        {hasGraph ? (
           <>
-            <div className="layer-bar">
-              <span>Viewing layer</span>
-              {Array.from({ length: graph.max_layer + 1 }, (_, i) => graph.max_layer - i).map((l) => (
-                <button key={l} className={l === layer ? "active" : ""} onClick={() => { setPlaying(false); setLayer(l); }}>
-                  {l}
-                </button>
-              ))}
-              <span className="legend">
-                <i className="dot hot" /> current node · <i className="dot good" /> result · ✕ query · ◯ entry
-              </span>
-            </div>
+            <LayerBar
+              maxLayer={graph.max_layer}
+              layer={layer}
+              onSelect={(l) => {
+                replay.pause(); // otherwise the replay would yank the layer right back
+                setLayer(l);
+              }}
+            />
             <GraphCanvas graph={graph} layer={layer} query={query} walk={walk} />
           </>
         ) : (
