@@ -449,3 +449,55 @@ N=3,000, consistent with the same per-node Python overhead), and a small
 `M` sweep (inconclusive at this dataset size — recall saturated across all
 tested `M` values, noted as a limitation of that specific run rather than
 papered over as a finding).
+
+---
+
+## Milestone 5 — HNSW explorer (web UI)
+
+**Goal:** make the HNSW internals visible. The point of this project is
+the mechanics, and a graph you can watch a search walk through shows them
+better than any table of numbers.
+
+### Backend
+
+- **Search trace** (`HNSWIndex.search_with_trace`): `search` was refactored
+  into a shared `_search` that takes an optional `trace` list, which is
+  threaded down into `_search_layer`. When it's `None` (every normal
+  query) the only cost is one `is not None` check per expanded node. When
+  set, each layer records its entry node, the `ef` used, every node
+  expanded in order, and the neighbors that expansion newly discovered.
+  Results are identical to plain `search` (tested).
+- **Graph export** (`core/hnsw/viz.py`): nodes capped at `max_nodes`,
+  highest layers first so the sparse upper layers always survive
+  truncation; edges deduplicated per layer (neighbor lists are directed,
+  the picture isn't). 2D coordinates come from PCA over the dim x dim
+  covariance matrix (`O(n * dim^2)`, independent of how many points), so
+  nearby vectors stay nearby on screen. The query is projected with the
+  same basis so it lands in the same space as the nodes (tested).
+- Endpoints: `POST /collections/{name}/search/trace`,
+  `GET /collections/{name}/graph`. Flat collections get a 400.
+
+### Frontend (`frontend/`, React + Vite, plain JavaScript)
+
+- `walk.js` flattens the per-layer trace into a list of events and
+  computes the visual state (visited set, walked edges, current node) at
+  any point in it. Scrubbing and replay are just "recompute from event 0
+  to i".
+- `GraphCanvas.jsx` draws one layer at a time on a canvas: that layer's
+  edges, the edges the search actually walked, visited vs. untouched
+  nodes, tombstones as hollow circles, the entry point, and the ranked
+  results.
+- A **Create demo** button seeds a clustered collection so there's
+  structure to look at; the live "nodes touched of N" counter ties the
+  picture back to the sub-linear-search claim in `BENCHMARKS.md`.
+- Dev server proxies `/api/*` to the backend, so no CORS config was added
+  to the Python side.
+
+### Known limits
+
+- The 2D view is a linear projection of high-dimensional data, so graph
+  neighbors can look far apart on screen. Edges are drawn from the real
+  adjacency lists, not from the projected distances.
+- "Nodes touched" counts distinct nodes that had a distance computed
+  against the query, across all layers.
+- Demo queries are random; there is no UI yet to enter a query vector.

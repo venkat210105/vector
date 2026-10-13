@@ -68,6 +68,23 @@ curl.exe -X DELETE http://127.0.0.1:8000/collections/demo/vectors/a
 Try the same thing with the brute-force baseline by creating a collection
 with `"index_type": "flat"` (or omit it — that's the default) instead.
 
+## Run the explorer UI
+
+Needs Node 18+. With the API already running on port 8000, in a second
+terminal:
+
+```powershell
+cd frontend
+npm install      # first time only
+npm run dev
+```
+
+Open **<http://localhost:5173>**. The dev server proxies `/api/*` to the
+backend on port 8000, so no CORS setup is needed. Click **Create demo** to
+generate a clustered 400-point HNSW collection (takes a few seconds because
+every upsert fsyncs the WAL), then **Run random query** to watch the search
+walk the graph.
+
 ## Run the test suite
 
 ```powershell

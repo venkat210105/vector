@@ -28,6 +28,11 @@ Most AI portfolio projects call an LLM API and stop there. This one goes a level
 - Recall@10 vs `ef_search` matches theory (saturates near `ef_search≈100` on the tested dataset), verified against `faiss-cpu`'s HNSW as an external reference, not just this project's own ground truth.
 - **Honest finding, reported rather than buried, then acted on**: the first benchmark run found this project's pure-Python `HNSWIndex` slower in wall-clock latency than the brute-force `FlatIndex` baseline, despite provably doing far fewer distance comparisons (confirmed by instrumentation — ~52% of brute force's comparisons at N=3,000, and falling). Diagnosed the cause (Python interpreter overhead per node visited, isolated by comparing against faiss's compiled HNSW), then closed part of the gap by batching distance computations — with a real setback along the way (naive batching made *insert* slower; fixed with a measured size threshold, not a guess). Net result: query latency ~25-40% faster, insert ~12% faster, `FlatIndex` still ahead but the gap narrowed meaningfully. Full story in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) and [`docs/SETBACKS.md`](docs/SETBACKS.md).
 
+**HNSW explorer (web UI):**
+
+- A React frontend in [`frontend/`](frontend/) that draws the layered HNSW graph and replays a search step by step: descent from the entry point through the sparse upper layers, then the `ef_search` expansion at layer 0, with a live "nodes touched vs. total" counter (the same sub-linear-search claim the benchmarks measure, made visible).
+- Backed by two read-only endpoints: a search trace (`POST /collections/{name}/search/trace`) and a graph export with a PCA 2D projection (`GET /collections/{name}/graph`). Tracing is opt-in, so regular `search` pays nothing for it.
+
 Not yet built (see Roadmap):
 
 - HNSW compaction (reclaiming tombstoned nodes' memory/edges)
@@ -43,6 +48,7 @@ vectordb/
     flat_index.py         # Brute-force baseline index
     hnsw/
       index.py             # HNSW: layered graph, insert, search
+      viz.py                # Read-only graph export + 2D projection for the UI
   storage/
     wal.py                # Append-only write-ahead log
     snapshot.py            # Full-state snapshot save/load
@@ -70,6 +76,8 @@ POST   /collections/{name}/vectors          # {id, vector, metadata}
 DELETE /collections/{name}/vectors/{id}
 POST   /collections/{name}/search           # {vector, k, ef_search}  -- ef_search optional, hnsw only
 GET    /collections/{name}/stats
+POST   /collections/{name}/search/trace     # same body as search; hnsw only. Returns results + per-layer walk + query_xy
+GET    /collections/{name}/graph?max_nodes= # hnsw only. Nodes (with 2D coords, layer, tombstone flag) + edges
 GET    /health
 ```
 
@@ -80,6 +88,12 @@ python -m venv .venv
 source .venv/Scripts/activate   # Windows Git Bash
 pip install -r requirements.txt
 uvicorn vectordb.api.main:app --reload
+```
+
+To run the explorer UI, start the API as above, then in a second terminal:
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
 See [`docs/SETUP.md`](docs/SETUP.md) for PowerShell-specific setup,
