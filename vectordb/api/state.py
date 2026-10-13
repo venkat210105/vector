@@ -34,9 +34,17 @@ class Registry:
         self.collections[name] = collection
         return collection
 
-    def create(self, name: str, dim: int, metric: str, index_type: str = "flat") -> Collection:
+    def create(
+        self,
+        name: str,
+        dim: int,
+        metric: str,
+        index_type: str = "flat",
+        M: int | None = None,
+        ef_construction: int | None = None,
+    ) -> Collection:
         with self._lock:
-            collection = Collection(name, dim=dim, metric=metric, data_dir=self.data_dir, index_type=index_type)
+            collection = Collection(name, dim=dim, metric=metric, data_dir=self.data_dir, index_type=index_type, M=M, ef_construction=ef_construction)
             self.collections[name] = collection
             return collection
 

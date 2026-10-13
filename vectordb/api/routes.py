@@ -35,7 +35,7 @@ def create_collection(req: CreateCollectionRequest):
     registry = get_registry()
     if req.name in registry.collections:
         raise HTTPException(status_code=409, detail=f"collection '{req.name}' already exists")
-    registry.create(req.name, req.dim, req.metric, req.index_type)
+    registry.create(req.name, req.dim, req.metric, req.index_type, M=req.M, ef_construction=req.ef_construction)
     return {"name": req.name, "dim": req.dim, "metric": req.metric, "index_type": req.index_type}
 
 

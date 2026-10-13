@@ -14,6 +14,19 @@ def _make_flat_collection(tmp_path: Path, name: str = "col") -> Collection:
 
 
 class TestCollectionHNSW:
+    def test_default_M_and_ef_construction(self, tmp_path: Path):
+        collection = _make_hnsw_collection(tmp_path)
+        assert collection.index.M == 16
+        assert collection.index.ef_construction == 200
+
+    def test_M_and_ef_construction_overrides_take_effect(self, tmp_path: Path):
+        collection = Collection(
+            "custom_col", dim=4, metric="l2", data_dir=tmp_path, index_type="hnsw", M=4, ef_construction=50
+        )
+        assert collection.index.M == 4
+        assert collection.index.M_max0 == 8
+        assert collection.index.ef_construction == 50
+
     def test_upsert_and_search_round_trip(self, tmp_path: Path):
         collection = _make_hnsw_collection(tmp_path)
         collection.upsert("a", [1.0, 0.0, 0.0, 0.0], {"tag": "a"})

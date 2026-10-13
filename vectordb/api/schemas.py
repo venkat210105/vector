@@ -8,6 +8,8 @@ class CreateCollectionRequest(BaseModel):
     dim: int = Field(gt=0)
     metric: str = "l2"
     index_type: str = "flat"
+    M: int | None = Field(default=None, gt=0)
+    ef_construction: int | None = Field(default=None, gt=0)
 
 
 class UpsertRequest(BaseModel):

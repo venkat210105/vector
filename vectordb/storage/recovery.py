@@ -11,19 +11,34 @@ from vectordb.storage.wal import WAL
 _INDEX_TYPES = {"flat": FlatIndex, "hnsw": HNSWIndex}
 
 
-def recover(dim: int, metric: str, index_type: str, snapshot_path: str | Path, wal: WAL) -> FlatIndex | HNSWIndex:
+def recover(
+    dim: int,
+    metric: str,
+    index_type: str,
+    snapshot_path: str | Path,
+    wal: WAL,
+    M: int | None = None,
+    ef_construction: int | None = None,
+) -> FlatIndex | HNSWIndex:
     """Loads the latest snapshot (if any) then replays WAL records written
-    after the snapshot's offset. Used on process startup. `index_type` is
-    only used to build a brand-new index when no snapshot exists yet --
-    once one exists, the index type is recovered from its own header, same
-    as dim/metric already are."""
+    after the snapshot's offset. Used on process startup. `index_type`
+    (and `M`/`ef_construction`, HNSW-only) are only used to build a
+    brand-new index when no snapshot exists yet -- once one exists, all of
+    this is recovered from its own header, same as dim/metric already are.
+    """
     snapshot_path = Path(snapshot_path)
     if snapshot_path.exists():
         index, wal_offset = snapshot.load(snapshot_path)
     else:
         if index_type not in _INDEX_TYPES:
             raise ValueError(f"unknown index_type: {index_type}")
-        index = _INDEX_TYPES[index_type](dim=dim, metric=metric)
+        hnsw_kwargs = {}
+        if index_type == "hnsw":
+            if M is not None:
+                hnsw_kwargs["M"] = M
+            if ef_construction is not None:
+                hnsw_kwargs["ef_construction"] = ef_construction
+        index = _INDEX_TYPES[index_type](dim=dim, metric=metric, **hnsw_kwargs)
         wal_offset = 0
 
     for record in wal.read_from(wal_offset):

@@ -18,7 +18,16 @@ class Collection:
     crash-recoverable persistence. One Collection per named vector
     collection (analogous to a Pinecone index or a Postgres table)."""
 
-    def __init__(self, name: str, dim: int, metric: str, data_dir: str | Path, index_type: str = "flat") -> None:
+    def __init__(
+        self,
+        name: str,
+        dim: int,
+        metric: str,
+        data_dir: str | Path,
+        index_type: str = "flat",
+        M: int | None = None,
+        ef_construction: int | None = None,
+    ) -> None:
         self.name = name
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -26,7 +35,7 @@ class Collection:
         self.snapshot_path = self.data_dir / f"{name}.snapshot"
 
         self._wal = WAL(self.wal_path)
-        self.index: FlatIndex | HNSWIndex = recover(dim, metric, index_type, self.snapshot_path, self._wal)
+        self.index: FlatIndex | HNSWIndex = recover(dim, metric, index_type, self.snapshot_path, self._wal, M=M, ef_construction=ef_construction)
         self._ops_since_snapshot = 0
         self._snapshot_lock = threading.Lock()
 
