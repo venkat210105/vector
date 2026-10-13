@@ -155,22 +155,42 @@ class HNSWIndex:
         reusing the build-time search width as a reasonable query-time
         default. Larger `ef_search` trades query latency for recall.
         """
-        query = np.asarray(query, dtype=np.float32)
+        results, _ = self._search(np.asarray(query, dtype=np.float32), k, ef_search, trace=None)
+        return results
+
+    def search_with_trace(self, query: np.ndarray, k: int, ef_search: int | None = None) -> tuple[list[tuple[str, float]], list[dict]]:
+        """Same search as `search`, but also returns a per-layer record of
+        the walk: for each layer descended, the entry node, the `ef` used,
+        every node expanded in order with the neighbors it newly
+        discovered, and the layer's result ids. Used by the visualizer; the
+        regular `search` path pays no recording cost."""
+        return self._search(np.asarray(query, dtype=np.float32), k, ef_search, trace=[])
+
+    def _search(
+        self, query: np.ndarray, k: int, ef_search: int | None, trace: list[dict] | None
+    ) -> tuple[list[tuple[str, float]], list[dict]]:
         with self._lock:
             if self._entry_point is None:
-                return []
+                return [], []
             ef = ef_search if ef_search is not None else max(k, self.ef_construction)
 
             nearest = self._entry_point
-            for lc in range(self._entry_layer, 0, -1):
-                result = self._search_layer(query, [nearest], ef=1, layer=lc)
-                if result:
-                    nearest = result[0][1]
+            for lc in range(self._entry_layer, -1, -1):
+                layer_ef = ef if lc == 0 else 1
+                steps: list[dict] | None = [] if trace is not None else None
+                result = self._search_layer(query, [nearest], ef=layer_ef, layer=lc, trace=steps)
+                if trace is not None:
+                    trace.append({"layer": lc, "ef": layer_ef, "entry": nearest, "steps": steps, "result": [eid for _, eid in result]})
+                if lc > 0:
+                    if result:
+                        nearest = result[0][1]
+                    continue
+                return [(eid, dist) for dist, eid in sorted(result)[:k]], trace or []
+        return [], []
 
-            candidates = self._search_layer(query, [nearest], ef=ef, layer=0)
-            return [(eid, dist) for dist, eid in sorted(candidates)[:k]]
-
-    def _search_layer(self, query: np.ndarray, entry_points: list[str], ef: int, layer: int) -> list[tuple[float, str]]:
+    def _search_layer(
+        self, query: np.ndarray, entry_points: list[str], ef: int, layer: int, trace: list[dict] | None = None
+    ) -> list[tuple[float, str]]:
         """Greedy best-first search within a single layer. Explores outward
         from `entry_points` by following graph edges -- never scans every
         node -- and returns up to `ef` (distance, id) pairs, nearest first.
@@ -207,6 +227,8 @@ class HNSWIndex:
                 break
 
             unvisited = [nid for nid in self._neighbors[c][layer] if nid not in visited]
+            if trace is not None:
+                trace.append({"expanded": c, "discovered": list(unvisited)})
             if not unvisited:
                 continue
             visited.update(unvisited)

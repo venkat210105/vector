@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from vectordb.api.schemas import (
     CreateCollectionRequest,
@@ -63,6 +63,26 @@ def search(name: str, req: SearchRequest):
         raise HTTPException(status_code=400, detail=f"expected vector of dim {collection.index.dim}, got {len(req.vector)}")
     results = collection.search(req.vector, req.k, ef_search=req.ef_search)
     return {"results": results}
+
+
+@router.post("/collections/{name}/search/trace")
+def search_trace(name: str, req: SearchRequest):
+    collection = get_registry().get_or_404(name)
+    if len(req.vector) != collection.index.dim:
+        raise HTTPException(status_code=400, detail=f"expected vector of dim {collection.index.dim}, got {len(req.vector)}")
+    try:
+        return collection.search_with_trace(req.vector, req.k, ef_search=req.ef_search)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/collections/{name}/graph")
+def graph(name: str, max_nodes: int = Query(default=500, gt=0, le=5000)):
+    collection = get_registry().get_or_404(name)
+    try:
+        return collection.graph(max_nodes=max_nodes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/collections/{name}/stats", response_model=StatsResponse)

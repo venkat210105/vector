@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from vectordb.core.flat_index import FlatIndex
+from vectordb.core.hnsw import viz
 from vectordb.core.hnsw.index import HNSWIndex
 from vectordb.core.point import Point
 from vectordb.storage import snapshot
@@ -62,6 +63,24 @@ class Collection:
         else:
             results = self.index.search(query, k)
         return [{"id": pid, "distance": dist, "metadata": self.index._metadata.get(pid, {})} for pid, dist in results]
+
+    def search_with_trace(self, query: list[float] | np.ndarray, k: int, ef_search: int | None = None) -> dict:
+        """HNSW only: search plus the per-layer walk and the query's 2D
+        position in the same projection `graph()` uses."""
+        if not isinstance(self.index, HNSWIndex):
+            raise ValueError("search trace is only available for hnsw collections")
+        query = np.asarray(query, dtype=np.float32)
+        results, layers = self.index.search_with_trace(query, k, ef_search=ef_search)
+        return {
+            "results": [{"id": pid, "distance": dist, "metadata": self.index._metadata.get(pid, {})} for pid, dist in results],
+            "layers": layers,
+            "query_xy": viz.project_query(self.index, query),
+        }
+
+    def graph(self, max_nodes: int = 500) -> dict:
+        if not isinstance(self.index, HNSWIndex):
+            raise ValueError("graph export is only available for hnsw collections")
+        return viz.export_graph(self.index, max_nodes=max_nodes)
 
     def stats(self) -> dict:
         return self.index.stats()
