@@ -1,4 +1,4 @@
-import { createCollection, upsertVector } from "./api.js";
+import { createCollection, upsertVector ,getStats} from "./api.js";
 
 // A small clustered dataset so the graph has visible structure. Cluster
 // centers come from a fixed seed, so queries can be generated later that
@@ -28,6 +28,7 @@ const centers = (() => {
 
 const around = (cluster, rng, spread) => centers[cluster].map((c) => c + gaussian(rng) * spread);
 
+
 export async function seedDemo(onProgress) {
   try {
     await createCollection({
@@ -38,8 +39,14 @@ export async function seedDemo(onProgress) {
       M: DEMO.M,
       ef_construction: DEMO.efConstruction,
     });
+    
   } catch (error) {
+    
     if (error.status !== 409) throw error; // already exists: reuse it
+    const existing = await getStats(DEMO.name)
+    if(existing.dim !== DEMO.dim) {
+      throw new Error(`Collection ${DEMO.name} already exists with a different dimension (${existing.dim} != ${DEMO.dim})`);
+    }
     return;
   }
   const rng = mulberry32(7);
