@@ -179,6 +179,76 @@ larger N, or a lower `ef_search` that doesn't already saturate) would be
 needed to see `M`'s effect on recall separate from its effect on graph
 density. Noted as a limitation of this run rather than a real finding.
 
+## Load test (simulated concurrent clients)
+
+Run with `python -m benchmarks.load_test.run_load_test` (see
+[`benchmarks/load_test/README.md`](../benchmarks/load_test/README.md)). It
+starts a throwaway server on its own port and temp data directory, seeds an
+HNSW collection (dim 16, `M=8`, 2,000 vectors), then ramps simulated users
+with [Locust](https://locust.io): 4 searching users for every 1 writing user
+(`k=10`, `ef_search=50`). The server is a single uvicorn process, and Locust
+runs on the same machine, so both compete for the same CPU.
+
+Aggregate requests per second and latency, two full runs of the same sweep
+(20 s per stage), 0 failed requests in every stage:
+
+| Users | Run 1 req/s | Run 1 p95 ms | Run 2 req/s | Run 2 p95 ms |
+|---:|---:|---:|---:|---:|
+| 10 | 69 | 41 | 67 | 55 |
+| 50 | 124 | 380 | 79 | 980 |
+| 100 | 118 | 920 | 82 | 2,000 |
+| 200 | 59 | 10,000 | 97 | 4,700 |
+
+What the numbers support:
+
+- Up to about 10 users the server is comfortable: p95 stays under 60 ms.
+- Beyond that, throughput stops growing (roughly 80-125 req/s) and latency
+  rises with the number of users. That is queueing: more clients, same
+  service rate.
+- The two runs disagree by up to 1.6x at the same user count (a VS Code
+  updater was running during these runs). Read the table as a range, not as
+  exact figures, and rerun on an idle machine before quoting any single
+  number. The cause of the throughput ceiling has not been diagnosed; one
+  Python process and the per-write `fsync` are the first suspects, not
+  measured conclusions.
+
+### Correctness under concurrent writes: a lost-write race (not yet fixed)
+
+The runner also checks correctness with no ambiguity: 64 threads send exactly
+1,000 unique upserts and the check waits for every one. (An earlier version
+compared against Locust's request count, which was wrong: Locust abandons
+requests still in flight when a stage ends, so the server can finish writes
+Locust never counted.)
+
+One run (300 seeded vectors, 50 writes from the sweep, then 1,000 concurrent
+writes):
+
+| Check | Result |
+|---|---|
+| Every concurrent write returned `204` | 1000 / 1000 |
+| In-memory count after the writes | 350 -> 1350, as expected |
+| Count after a hard kill and restart (WAL replay) | **1348, expected 1350** |
+
+Every write was acknowledged, and an acknowledged write has been fsynced to
+the WAL, so two writes were lost somewhere between the WAL and the recovered
+index. This was observed once; it has not been reproduced on demand yet.
+
+**Hypothesis:** a race in `Collection.flush`. The run crossed
+`SNAPSHOT_EVERY_N_OPS` (1,000 operations), which triggers a snapshot followed
+by `WAL.truncate()`. The snapshot and the truncate are not atomic with respect
+to other threads. A write whose WAL record is appended after the snapshot was
+captured but before `truncate()` runs is erased from the log, and it is not in
+the snapshot either, so recovery cannot find it. `Collection.upsert` also
+does the WAL append and the index insert as two separate steps with no lock
+around the pair, so the order in the log and the order in memory can differ.
+
+**How to confirm it:** run the correctness check with fewer than 1,000 total
+operations (no flush happens, so it should pass), then with more than 1,000
+(it should fail). If it passes below and fails above the threshold, the race
+is in `flush`. A fix would take one lock that covers "WAL append + index
+insert" for writers and "snapshot + truncate" for `flush`, which is also the
+first step of the roadmap's concurrency layer.
+
 ## Takeaways
 
 - Recall behaves exactly as the algorithm predicts, verified against a
