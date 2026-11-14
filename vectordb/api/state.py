@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from vectordb.collection import Collection
+from vectordb.storage import meta
 
 DEFAULT_DATA_DIR = Path(os.environ.get("VECTORDB_DATA_DIR", "./data"))
 
@@ -22,15 +23,27 @@ class Registry:
     def _load_existing(self) -> None:
         if not self.data_dir.exists():
             return
-        for snapshot_file in self.data_dir.glob("*.snapshot"):
-            name = snapshot_file.stem
+        # A collection exists if it has a snapshot (older collections) or a
+        # .meta file (written at creation, so WAL-only collections count too).
+        names = {f.stem for pattern in ("*.snapshot", "*.meta") for f in self.data_dir.glob(pattern)}
+        for name in sorted(names):
             self._reopen(name)
 
     def _reopen(self, name: str) -> Collection:
-        # dim/metric/index_type are recovered from the snapshot header
-        # itself; pass placeholders since recover() only uses them when no
-        # snapshot exists.
-        collection = Collection(name, dim=1, metric="l2", data_dir=self.data_dir, index_type="flat")
+        # Prefer the creation parameters in <name>.meta. If it is missing, a
+        # snapshot must exist (legacy collection) and carries them in its own
+        # header, so the placeholders below are never used.
+        meta_path = self.data_dir / f"{name}.meta"
+        params = meta.load(meta_path) if meta_path.exists() else {"dim": 1, "metric": "l2", "index_type": "flat"}
+        collection = Collection(
+            name,
+            dim=params["dim"],
+            metric=params["metric"],
+            data_dir=self.data_dir,
+            index_type=params["index_type"],
+            M=params.get("M"),
+            ef_construction=params.get("ef_construction"),
+        )
         self.collections[name] = collection
         return collection
 

@@ -7,7 +7,7 @@ from vectordb.core.flat_index import FlatIndex
 from vectordb.core.hnsw import viz
 from vectordb.core.hnsw.index import HNSWIndex
 from vectordb.core.point import Point
-from vectordb.storage import snapshot
+from vectordb.storage import meta, snapshot
 from vectordb.storage.recovery import recover
 from vectordb.storage.wal import WAL
 
@@ -34,6 +34,17 @@ class Collection:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.wal_path = self.data_dir / f"{name}.wal"
         self.snapshot_path = self.data_dir / f"{name}.snapshot"
+        self.meta_path = self.data_dir / f"{name}.meta"
+
+        # Record creation parameters *before* the first WAL write, so even a
+        # collection that crashes before its first snapshot can be reopened.
+        # (An existing snapshot already carries them, so legacy collections
+        # without a .meta file are left alone.)
+        if not self.meta_path.exists() and not self.snapshot_path.exists():
+            meta.save(
+                self.meta_path,
+                {"dim": dim, "metric": metric, "index_type": index_type, "M": M, "ef_construction": ef_construction},
+            )
 
         self._wal = WAL(self.wal_path)
         self.index: FlatIndex | HNSWIndex = recover(dim, metric, index_type, self.snapshot_path, self._wal, M=M, ef_construction=ef_construction)
