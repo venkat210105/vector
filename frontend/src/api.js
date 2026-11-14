@@ -28,3 +28,4 @@ export const upsertVector = (name, body) => post(`/collections/${name}/vectors`,
 export const getStats = (name) => request(`/collections/${name}/stats`);
 export const getGraph = (name, maxNodes = 500) => request(`/collections/${name}/graph?max_nodes=${maxNodes}`);
 export const searchTrace = (name, body) => post(`/collections/${name}/search/trace`, body);
+export const deleteVector = (name, id) => request(`/collections/${name}/vectors/${encodeURIComponent(id)}`, { method: "DELETE" });
