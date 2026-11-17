@@ -1,0 +1,6 @@
+# Static site: Netlify runs the build and serves the dist/ folder.
+# Navigation uses #/hash links, so no redirect rules are needed.
+[build]
+  base = "blog"
+  command = "npm run build"
+  publish = "dist"
