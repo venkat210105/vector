@@ -33,6 +33,7 @@ export default function App() {
   const [layer, setLayer] = useState(0); // which layer is drawn
   const [selectedNodeId, setSelectedNodeId] = useState(null); // node shown in the inspector
   const [showDeleted, setShowDeleted] = useState(true);
+  const [focusWalk, setFocusWalk] = useState(false); // hide nodes the search has not touched
   const [queryMode, setQueryMode] = useState("random"); // "random" | "custom"
   const [customText, setCustomText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -239,6 +240,9 @@ export default function App() {
               showDeleted={showDeleted}
               onShowDeletedChange={setShowDeleted}
               tombstoned={tombstoned}
+              hasWalk={!!trace}
+              focusWalk={focusWalk}
+              onFocusWalkChange={setFocusWalk}
             />
             <GraphCanvas
               graph={graph}
@@ -248,6 +252,7 @@ export default function App() {
               selectedId={selectedNodeId}
               onSelectNode={setSelectedNodeId}
               showDeleted={showDeleted}
+              focusWalk={focusWalk}
             />
           </>
         ) : (
