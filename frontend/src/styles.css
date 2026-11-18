@@ -9,6 +9,7 @@
   --hot: #d9480f;
   --good: #1a7f37;
   --bad: #cf222e;
+  --path: #bf8700;
   color-scheme: light dark;
 }
 
@@ -24,6 +25,7 @@
     --hot: #ff9248;
     --good: #3fb950;
     --bad: #ff7b72;
+    --path: #e3b341;
   }
 }
 
@@ -123,6 +125,7 @@ textarea {
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .dot.hot { border: 2px solid var(--hot); }
 .dot.good { border: 2px solid var(--good); }
+.dot.path { width: 14px; height: 4px; border-radius: 2px; background: var(--path); vertical-align: middle; }
 
 .canvas-wrap {
   position: relative;
