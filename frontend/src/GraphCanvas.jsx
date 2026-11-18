@@ -11,7 +11,7 @@ const clusterColor = (node) => {
 // Draws one layer of the HNSW graph on a canvas. `walk` is the replay state
 // derived from the search trace (visited / expanded / results), or null when
 // no search has been run.
-export default function GraphCanvas({ graph, layer, query, walk, selectedId, onSelectNode, showDeleted }) {
+export default function GraphCanvas({ graph, layer, query, walk, selectedId, onSelectNode, showDeleted, focusWalk }) {
   const canvasRef = useRef(null);
   const [size, setSize] = useState({ w: 800, h: 560 });
   const [hover, setHover] = useState(null);
@@ -20,6 +20,32 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
   const dragRef = useRef(null);
 
   const byId = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
+
+  // Shortest hop path from the global entry point to the selected node on
+  // the layer being drawn (breadth-first search over that layer's edges, which
+  // are treated as undirected). Same idea as Feder's highlighted route.
+  const pathToSelected = useMemo(() => {
+    if (!selectedId || !graph.entry_point || selectedId === graph.entry_point) return [];
+    const adjacent = new Map();
+    for (const e of graph.edges) {
+      if (e.layer !== layer) continue;
+      if (!adjacent.has(e.source)) adjacent.set(e.source, []);
+      if (!adjacent.has(e.target)) adjacent.set(e.target, []);
+      adjacent.get(e.source).push(e.target);
+      adjacent.get(e.target).push(e.source);
+    }
+    const parent = new Map([[graph.entry_point, null]]);
+    const queue = [graph.entry_point];
+    for (let i = 0; i < queue.length && !parent.has(selectedId); i++) {
+      for (const next of adjacent.get(queue[i]) || []) {
+        if (!parent.has(next)) { parent.set(next, queue[i]); queue.push(next); }
+      }
+    }
+    if (!parent.has(selectedId)) return [];
+    const path = [];
+    for (let id = selectedId; id !== null; id = parent.get(id)) path.push(id);
+    return path.reverse();
+  }, [graph, layer, selectedId]);
 
   // Fit all node coordinates (plus the query) into the canvas.
   const project = useMemo(() => {
@@ -82,13 +108,17 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
 
     const css = getComputedStyle(document.documentElement);
     const fg = css.getPropertyValue("--fg").trim();
+    const pathColor = css.getPropertyValue("--path").trim();
     const edgeColor = css.getPropertyValue("--edge").trim();
     const accent = css.getPropertyValue("--accent").trim();
     const hot = css.getPropertyValue("--hot").trim();
     const good = css.getPropertyValue("--good").trim();
     const bad = css.getPropertyValue("--bad").trim();
 
-    const active = graph.nodes.filter((n) => n.level >= layer && (showDeleted || !n.deleted));
+    // In focus mode, nodes the search has not touched yet are hidden, so the
+    // picture grows as the search discovers nodes (as in Feder).
+    const hidden = (n) => (!showDeleted && n.deleted) || (focusWalk && walk && !walk.visited.has(n.id));
+    const active = graph.nodes.filter((n) => n.level >= layer && !hidden(n));
     const activeIds = new Set(active.map((n) => n.id));
     const pos = (n) => toScreen(n.x, n.y);
 
@@ -119,6 +149,20 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
       }
+      ctx.stroke();
+    }
+
+    // Route from the entry point to the selected node, drawn on top.
+    if (pathToSelected.length > 1) {
+      ctx.strokeStyle = pathColor;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      pathToSelected.forEach((id, i) => {
+        const n = byId.get(id);
+        if (!n) return;
+        const [x, y] = pos(n);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
       ctx.stroke();
     }
 
@@ -204,7 +248,7 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
       ctx.lineTo(qx - 7, qy + 7);
       ctx.stroke();
     }
-  }, [graph, layer, query, walk, size, toScreen, byId, selectedId, showDeleted, view.k, hover]);
+  }, [graph, layer, query, walk, size, toScreen, byId, selectedId, showDeleted, view.k, hover, focusWalk, pathToSelected]);
 
   const pointer = (event) => {
     const rect = canvasRef.current.getBoundingClientRect();
@@ -214,7 +258,7 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
   const nodeAt = (mx, my) => {
     let best = null, bestDist = 10;
     for (const n of graph.nodes) {
-      if (n.level < layer || (!showDeleted && n.deleted)) continue;
+      if (n.level < layer || (!showDeleted && n.deleted) || (focusWalk && walk && !walk.visited.has(n.id))) continue;
       const [x, y] = toScreen(n.x, n.y);
       const d = Math.hypot(x - mx, y - my);
       if (d < bestDist) { best = n; bestDist = d; }
@@ -268,6 +312,7 @@ export default function GraphCanvas({ graph, layer, query, walk, selectedId, onS
         <div className="tooltip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
           <strong>{hover.node.id}</strong>
           <div>top layer: {hover.node.level}</div>
+          {selectedId === hover.node.id && pathToSelected.length > 1 && <div>{pathToSelected.length - 1} hops from entry</div>}
           {hover.node.deleted && <div>tombstoned</div>}
           {Object.keys(hover.node.metadata || {}).length > 0 && <div>{JSON.stringify(hover.node.metadata)}</div>}
         </div>
