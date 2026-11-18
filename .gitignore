@@ -10,3 +10,6 @@ data/
 
 node_modules/
 frontend/dist/
+
+# netlify cli link
+.netlify/
