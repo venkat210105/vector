@@ -66,3 +66,13 @@ export function randomQuery(collection) {
   }
   return Array.from({ length: collection.dim }, () => gaussian(Math.random));
 }
+
+// A new point to insert from the UI: for the demo collection it joins a random
+// cluster (so it visibly lands among its neighbors); otherwise pure noise.
+export function randomPoint(collection) {
+  if (collection.name === DEMO.name) {
+    const cluster = Math.floor(Math.random() * DEMO.clusters);
+    return { vector: around(cluster, Math.random, 0.8), metadata: { cluster } };
+  }
+  return { vector: Array.from({ length: collection.dim }, () => gaussian(Math.random)), metadata: {} };
+}

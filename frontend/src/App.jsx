@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { getGraph, listCollections, searchTrace } from "./api.js";
+import { deleteVector, getGraph, listCollections, searchTrace, upsertVector } from "./api.js";
 import CollectionPicker from "./components/CollectionPicker.jsx";
 import GraphSummary from "./components/GraphSummary.jsx";
+import NodeInspector from "./components/NodeInspector.jsx";
 import LayerBar from "./components/LayerBar.jsx";
 import ReplayControls from "./components/ReplayControls.jsx";
 import SearchControls from "./components/SearchControls.jsx";
 import WalkStats from "./components/WalkStats.jsx";
-import { DEMO, randomQuery, seedDemo } from "./demo.js";
+import { DEMO, randomPoint, randomQuery, seedDemo } from "./demo.js";
 import GraphCanvas from "./GraphCanvas.jsx";
 import { useReplay } from "./hooks/useReplay.js";
 import { walkState } from "./walk.js";
@@ -30,6 +31,11 @@ export default function App() {
   const [k, setK] = useState(5);
   const [efSearch, setEfSearch] = useState(20);
   const [layer, setLayer] = useState(0); // which layer is drawn
+  const [selectedNodeId, setSelectedNodeId] = useState(null); // node shown in the inspector
+  const [showDeleted, setShowDeleted] = useState(true);
+  const [queryMode, setQueryMode] = useState("random"); // "random" | "custom"
+  const [customText, setCustomText] = useState("");
+  const [busy, setBusy] = useState(false);
 
   // All playback state (step, playing, speed, timers) lives in this hook.
   const replay = useReplay(trace);
@@ -49,6 +55,7 @@ export default function App() {
 
   const loadGraph = useCallback(async (name) => {
     setTrace(null);
+    setSelectedNodeId(null);
     setGraph(await getGraph(name, 600));
     setLayer(0);
   }, []);
@@ -85,9 +92,53 @@ export default function App() {
       if (demo) await loadGraph(demo.name);
     });
 
+  // Reload the graph after an edit, keeping the current layer and selection.
+  const refreshGraph = async () => {
+    setTrace(null);
+    setGraph(await getGraph(selected.name, 600));
+  };
+
+  const addPoint = () =>
+    guard(async () => {
+      setBusy(true);
+      try {
+        const { vector, metadata } = randomPoint(selected);
+        const id = `u${Date.now().toString(36)}`;
+        await upsertVector(selected.name, { id, vector, metadata });
+        await refreshGraph();
+        setSelectedNodeId(id);
+      } finally {
+        setBusy(false);
+      }
+    });
+
+  const deletePoint = (id) =>
+    guard(async () => {
+      setBusy(true);
+      try {
+        await deleteVector(selected.name, id);
+        await refreshGraph();
+      } finally {
+        setBusy(false);
+      }
+    });
+
+  // Parse the pasted vector; null means "fine or not in custom mode".
+  const customVector = useMemo(
+    () => customText.split(/[\s,]+/).filter(Boolean).map(Number),
+    [customText]
+  );
+  const customError = (() => {
+    if (queryMode !== "custom" || !selected) return null;
+    if (customVector.length === 0) return "Enter a vector.";
+    if (customVector.some(Number.isNaN)) return "Only numbers, separated by commas or spaces.";
+    if (customVector.length !== selected.dim) return `Need ${selected.dim} numbers, got ${customVector.length}.`;
+    return null;
+  })();
+
   const runSearch = () =>
     guard(async () => {
-      const vector = randomQuery(selected);
+      const vector = queryMode === "custom" ? customVector : randomQuery(selected);
       setTrace(await searchTrace(selected.name, { vector, k, ef_search: efSearch }));
     });
 
@@ -112,6 +163,8 @@ export default function App() {
     if (walkLayer !== undefined) setLayer(walkLayer);
   }, [walkLayer]);
 
+  const selectedNode = graph?.nodes.find((n) => n.id === selectedNodeId) ?? null;
+  const tombstoned = graph ? graph.nodes.length - liveCount : 0;
   const query = trace ? { xy: trace.query_xy } : null;
   const hasGraph = graph && graph.nodes.length > 0;
 
@@ -139,12 +192,37 @@ export default function App() {
           onKChange={setK}
           efSearch={efSearch}
           onEfSearchChange={setEfSearch}
+          queryMode={queryMode}
+          onQueryModeChange={setQueryMode}
+          customText={customText}
+          onCustomTextChange={setCustomText}
+          customError={customError}
+          dim={selected?.dim}
           onRun={runSearch}
           disabled={!hasGraph}
         />
 
         {trace && <ReplayControls replay={replay} />}
-        {walk && <WalkStats walk={walk} liveCount={liveCount} results={trace.results} />}
+        {walk && <WalkStats walk={walk} liveCount={liveCount} results={trace.results} onPick={setSelectedNodeId} />}
+
+        {hasGraph && (
+          <>
+            <hr />
+            <button onClick={addPoint} disabled={busy}>+ Add random point</button>
+            {selectedNode ? (
+              <NodeInspector
+                node={selectedNode}
+                graph={graph}
+                layer={layer}
+                busy={busy}
+                onDelete={deletePoint}
+                onClose={() => setSelectedNodeId(null)}
+              />
+            ) : (
+              <p className="muted">Click a node to inspect or delete it.</p>
+            )}
+          </>
+        )}
         {error && <div className="error">{error}</div>}
       </aside>
 
@@ -158,8 +236,19 @@ export default function App() {
                 replay.pause(); // otherwise the replay would yank the layer right back
                 setLayer(l);
               }}
+              showDeleted={showDeleted}
+              onShowDeletedChange={setShowDeleted}
+              tombstoned={tombstoned}
             />
-            <GraphCanvas graph={graph} layer={layer} query={query} walk={walk} />
+            <GraphCanvas
+              graph={graph}
+              layer={layer}
+              query={query}
+              walk={walk}
+              selectedId={selectedNodeId}
+              onSelectNode={setSelectedNodeId}
+              showDeleted={showDeleted}
+            />
           </>
         ) : (
           <div className="empty">
