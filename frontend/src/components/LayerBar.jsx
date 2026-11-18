@@ -2,7 +2,7 @@ import React from "react";
 
 // Buttons to choose which layer of the graph is drawn. Layer 0 is the dense
 // bottom layer holding every node; higher layers are sparser "express lanes".
-export default function LayerBar({ maxLayer, layer, onSelect, showDeleted, onShowDeletedChange, tombstoned }) {
+export default function LayerBar({ maxLayer, layer, onSelect, showDeleted, onShowDeletedChange, tombstoned, hasWalk, focusWalk, onFocusWalkChange }) {
   // Top layer first, so the buttons read like the picture: high layers up top.
   const layers = Array.from({ length: maxLayer + 1 }, (_, i) => maxLayer - i);
 
@@ -22,8 +22,14 @@ export default function LayerBar({ maxLayer, layer, onSelect, showDeleted, onSho
           show {tombstoned} tombstoned
         </label>
       )}
+      {hasWalk && (
+        <label className="check">
+          <input type="checkbox" checked={focusWalk} onChange={(e) => onFocusWalkChange(e.target.checked)} />
+          hide untouched nodes
+        </label>
+      )}
       <span className="legend">
-        <i className="dot hot" /> current · <i className="dot good" /> result · ✕ query · ◯ entry
+        <i className="dot hot" /> current · <i className="dot good" /> result · <i className="dot path" /> path to selected · ✕ query · ◯ entry
       </span>
     </div>
   );
