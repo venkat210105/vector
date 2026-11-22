@@ -492,6 +492,25 @@ better than any table of numbers.
   picture back to the sub-linear-search claim in `BENCHMARKS.md`.
 - Dev server proxies `/api/*` to the backend, so no CORS config was added
   to the Python side.
+- **Structure:** `App.jsx` only owns state and wiring. The UI is split into
+  small single-purpose components under `src/components/`, and all
+  play/pause/step/timer logic lives in the `useReplay` hook
+  (`src/hooks/useReplay.js`). `frontend/README.md` gives a reading order
+  with the React concepts each file introduces.
+- **Tests:** `src/walk.test.js` (5 tests, Node's built-in runner, no extra
+  dependencies) covers the trace-to-events and replay-state logic, which is
+  pure JavaScript and so easy to test. Run with `npm test`.
+
+### A bug the explorer exposed
+
+"Create demo" treated a 409 ("collection already exists") as success and
+skipped seeding. A stale `demo` collection left in `data/` with `dim=4`
+meant the next query sent 16 numbers to a 4-number collection and failed
+with `expected vector of dim 4, got 16`, far from the real cause. `seedDemo`
+now rethrows anything that is not a 409, then compares the existing
+collection's `dim` (via `getStats`) with the demo's and throws a clear
+message on mismatch. The `409` check has to come first so that an unrelated
+failure is never mistaken for "already exists".
 
 ### Known limits
 
@@ -501,3 +520,37 @@ better than any table of numbers.
 - "Nodes touched" counts distinct nodes that had a distance computed
   against the query, across all layers.
 - Demo queries are random; there is no UI yet to enter a query vector.
+- Only `dim` is compared when reusing an existing `demo` collection.
+  `metric`, `index_type`, and whether it actually holds the demo points are
+  not checked, and `randomQuery` still chooses the clustered query by
+  collection name instead of by `collection.dim`.
+
+---
+
+## Tooling and process
+
+- **CI** (`.github/workflows/ci.yml`): runs `pytest` on Python 3.11 and 3.12,
+  and, for the frontend, `npm ci`, `npm test` and `npm run build`. It also
+  triggers on `merge_group` so it would work with a merge queue. Merge
+  queues need an organization-owned repository, and this one is owned by a
+  personal account, so branch protection on `master` is the available
+  equivalent.
+- **Branches and pull requests:** work now happens on feature branches
+  (`feature/recall-playground`, PR #1) instead of directly on `master`, so
+  CI gates each change.
+- **Architecture docs:** [`ARCHITECTURE.md`](ARCHITECTURE.md) has Mermaid
+  diagrams of the layer stack, one upsert end to end, and startup recovery.
+
+### Open issues found while documenting
+
+- **A collection with no snapshot is not reopened after an unclean exit.**
+  `Registry._load_existing` only scans `*.snapshot`, and a collection gets
+  its first snapshot after 1000 writes or a clean shutdown. A collection
+  holding only a `.wal` is skipped on restart even though its writes were
+  fsynced. Reproduced with a fresh `Registry`: create, upsert one vector,
+  skip `close()`, start a new `Registry`, and the collection list is empty.
+  Fix needs the Registry to scan `*.wal` too and a way to recover `dim`,
+  `metric` and `index_type` without a snapshot header. Not fixed yet.
+- **The snapshot temp file is not fsynced before the rename.** The atomic
+  rename covers a process crash; surviving power loss also needs an
+  `fsync` of the temp file first.

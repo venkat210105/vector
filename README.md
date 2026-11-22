@@ -61,6 +61,8 @@ vectordb/
     state.py                  # In-process registry of open collections
 ```
 
+Diagrams of the request path, crash recovery and the known gaps: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ### Persistence design
 
 Every write goes: **WAL append (fsync'd) → apply to in-memory index**. This is write-ahead in the traditional sense — if the process crashes between those two steps, recovery replays the WAL and reconstructs the exact same state. Snapshots exist purely as a compaction mechanism so recovery doesn't have to replay an unbounded WAL from the beginning of time; after every `SNAPSHOT_EVERY_N_OPS` writes, the current index state is serialized to disk and the WAL is truncated.
