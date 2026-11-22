@@ -5,6 +5,7 @@ venv/
 data/
 *.wal
 *.snapshot
+*.meta
 .pytest_cache/
 *.egg-info/
 

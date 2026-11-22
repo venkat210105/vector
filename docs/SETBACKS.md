@@ -116,3 +116,29 @@ different call sites (insert vs search) needed to be measured together,
 not just one representative case — they have different batch-size
 distributions because they use different `ef` values, and a fix validated
 against only one of them would have shipped a regression in the other.
+
+---
+
+## A collection with no snapshot vanished after an unclean restart
+
+**Symptom:** create a collection, upsert one vector, kill the process before
+any snapshot exists, restart: `GET /collections` returned nothing. This
+contradicted the README's claim that `kill -9` loses no committed writes.
+Reproduced with a `Registry` in a temp dir before fixing.
+
+**Root cause:** startup discovered collections by globbing `*.snapshot`. A
+snapshot is first written after `SNAPSHOT_EVERY_N_OPS` writes or a clean
+`close()`, so a young collection has only a `.wal`. And even if the `.wal`
+had been found, WAL records carry only `id`/`vector`/`metadata`, so there was
+no way to know the `dim`, `metric` or `index_type` to rebuild the index with.
+
+**Fix:** write a small `<name>.meta` JSON file (dim, metric, index type,
+`M`, `ef_construction`) atomically and fsync'd *before* the first WAL write,
+and discover collections from `*.snapshot` **or** `*.meta`. Collections that
+predate the fix have a snapshot, which still carries those parameters, so
+they reopen exactly as before. Covered by `tests/test_wal_only_recovery.py`.
+
+**The lesson worth remembering:** a durability claim has to be tested at its
+edges. The happy path (clean shutdown, or more than 1000 writes) always had a
+snapshot, so every earlier test passed; the bug lived in the state *before*
+the first snapshot.
