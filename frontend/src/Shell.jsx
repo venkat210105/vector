@@ -15,9 +15,14 @@ export default function Shell() {
 
   return (
     <>
-      <nav className="topbar">
+      <nav className="topbar" aria-label="Views">
         {TABS.map((t) => (
-          <button key={t.id} className={tab === t.id ? "active" : ""} onClick={() => setTab(t.id)}>
+          <button
+            key={t.id}
+            className={tab === t.id ? "active" : ""}
+            aria-current={tab === t.id ? "page" : undefined}
+            onClick={() => setTab(t.id)}
+          >
             {t.label}
           </button>
         ))}

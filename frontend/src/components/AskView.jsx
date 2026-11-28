@@ -56,6 +56,7 @@ export default function AskView() {
           type="text"
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
+          aria-label="Your question about the project"
           placeholder="e.g. how does crash recovery work?"
           autoFocus
         />
